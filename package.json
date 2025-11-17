@@ -1,0 +1,28 @@
+{
+  "name": "ai-browser-automation",
+  "version": "2.0.0",
+  "description": "AI-powered browser automation with Claude, HTML analysis, Vision API fallback, human assistance, and tab management",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "ai",
+    "browser",
+    "automation",
+    "claude",
+    "puppeteer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.35.0",
+    "puppeteer": "^24.15.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.7",
+    "readline": "^1.3.0"
+  }
+}
