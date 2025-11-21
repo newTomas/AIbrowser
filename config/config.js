@@ -26,6 +26,7 @@ export const config = {
     maxSteps: parseInt(process.env.MAX_STEPS) || 50,
     maxContextSize: parseInt(process.env.MAX_CONTEXT_SIZE) || 10000,
     autoConfirm: process.env.AUTO_CONFIRM === 'true', // For testing only
+    verboseLogging: process.env.VERBOSE_LOGGING === 'true', // Detailed clickable elements logging
   },
 
   // Validate configuration

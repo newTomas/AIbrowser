@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import { config } from '../../config/config.js';
 
 /**
  * HTMLAnalyzerAgent - Combines DOM parsing with Claude semantic analysis
@@ -560,6 +561,54 @@ export class HTMLAnalyzerAgent {
           inputs: inputs.slice(0, 5), // Max 5 inputs per form
         });
       });
+    }
+
+    // NEW v2.2.1: Verbose logging of all clickable elements
+    if (config.agent.verboseLogging) {
+      console.log('\n🔍 === VERBOSE: All Clickable Elements Found ===');
+      console.log(`Total actionable elements: ${actionableElements.length}`);
+
+      // Group by type
+      const buttons = actionableElements.filter(el => el.type === 'button');
+      const links = actionableElements.filter(el => el.type === 'link');
+      const clickableBlocks = actionableElements.filter(el => el.type === 'clickable-block');
+
+      if (buttons.length > 0) {
+        console.log(`\n📋 Buttons (${buttons.length}):`);
+        buttons.forEach((btn, i) => {
+          const status = btn.disabled ? ' [DISABLED]' : '';
+          console.log(`  ${i + 1}. "${btn.displayText}" → ${btn.cssSelector}${status}`);
+        });
+      }
+
+      if (links.length > 0) {
+        console.log(`\n🔗 Links (${links.length}):`);
+        links.forEach((link, i) => {
+          const href = link.href ? ` → ${link.href}` : '';
+          console.log(`  ${i + 1}. "${link.displayText}" → ${link.cssSelector}${href}`);
+        });
+      }
+
+      if (clickableBlocks.length > 0) {
+        console.log(`\n🖱️  Clickable Blocks (${clickableBlocks.length}):`);
+        clickableBlocks.forEach((block, i) => {
+          const method = block.clickableBy ? ` [${block.clickableBy}]` : '';
+          console.log(`  ${i + 1}. "${block.displayText}" → ${block.cssSelector}${method}`);
+        });
+      }
+
+      if (forms.length > 0) {
+        console.log(`\n📝 Forms (${forms.length}):`);
+        forms.forEach((form, i) => {
+          console.log(`  ${i + 1}. Form (${form.method}): ${form.inputCount} inputs`);
+          form.inputs.forEach((input, j) => {
+            const selector = input.selector ? ` → ${input.selector}` : '';
+            console.log(`     - ${input.type}: "${input.label || input.name}"${selector}`);
+          });
+        });
+      }
+
+      console.log('=== END VERBOSE LOG ===\n');
     }
 
     return {
