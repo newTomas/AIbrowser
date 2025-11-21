@@ -37,10 +37,13 @@ npm test
 1. **BrowserManager** (`src/browser/BrowserManager.js`)
    - Manages Puppeteer browser instances with multi-tab support
    - Handles persistent sessions (stores in `./sessions/{sessionName}`)
-   - Provides smart page content extraction (not full HTML)
+   - **Provides smart page content extraction** - extracts ONLY visible text, ignoring hidden elements
+   - Uses `checkVisibility()` API to filter all content (text, links, forms, buttons)
    - Universal CAPTCHA visibility checking (works with any provider)
    - **Key methods**:
      - `launch()`, `goto()`, `getPageContent()`, `getHTML()`
+     - `getPageContent()` - **NEW v2.2**: Extracts only visible text using DOM tree walk + checkVisibility()
+     - `getHTML()` - **NEW v2.2**: Removes hidden elements before returning HTML (for HTMLAnalyzerAgent/Cheerio)
      - `click()`, `type()` - **Always clear input before typing, use DOM click to avoid overlays**
      - `createTab()`, `switchTab()`, `closeTab()`, `getAllTabs()`
      - `checkCaptchaVisibility()` - Universal approach, checks CSS visibility/opacity
@@ -56,6 +59,7 @@ npm test
 3. **HTMLAnalyzerAgent** (`src/agents/HTMLAnalyzerAgent.js`)
    - Runs in **separate context** to avoid bloating main conversation
    - Uses Cheerio for offline DOM parsing
+   - **NEW v2.2**: Receives pre-filtered HTML (only visible elements) from getHTML()
    - Generates reliable CSS selectors (priority: ID > data-testid > name > aria-label)
    - Returns compact summaries with actionable elements + selectors
    - **Key methods**: `analyzePage()`, `getCompactSummary()`, `generateBestSelector()`
@@ -101,6 +105,19 @@ npm test
    - Used for error recovery by MainAgent
    - Each SubAgent is stateless and task-specific
 
+10. **VisibilityChecker** (`src/utils/VisibilityChecker.js`) **NEW v2.2**
+   - Checks if elements are truly clickable (not covered by overlays)
+   - **Uses native `element.checkVisibility()` API** for reliable visibility detection (with fallback for older browsers)
+   - Automatically checks parent element visibility (hidden parents = hidden children)
+   - Uses `elementFromPoint()` to verify what's at element's position
+   - Detects active modals/overlays on page
+   - Attempts to dismiss modals automatically
+   - **Key methods**:
+     - `isElementClickable(selector)` - Checks if element is clickable (uses checkVisibility + elementFromPoint)
+     - `detectModals()` - Finds active modals/overlays (ignores hidden modals)
+     - `dismissModal(modal)` - Tries to close modal (button/Escape/backdrop)
+     - `getPageOverlayStatus()` - Returns overlay summary for context
+
 ### Key Design Patterns
 
 **Multi-Tab Architecture**:
@@ -111,9 +128,11 @@ npm test
 
 **HTML Analysis in Separate Context**:
 - HTMLAnalyzerAgent runs in isolated conversation to avoid context bloat
+- **NEW v2.2**: Receives pre-filtered HTML with hidden elements removed (via checkVisibility())
 - Uses Cheerio for offline DOM parsing + Claude for semantic understanding
 - Returns compact summary (~90% size reduction) with CSS selectors
 - Main conversation only receives actionable elements with selectors
+- **Key benefit**: Cheerio only parses visible elements, doesn't generate selectors for hidden content
 
 **Universal CAPTCHA Detection**:
 - Not tied to specific providers (reCAPTCHA, hCaptcha, Cloudflare)
@@ -149,6 +168,16 @@ npm test
 - Tracks last 10 action signatures
 - If same action repeats 3+ times in last 5 actions → requests human help
 - Prevents AI from getting stuck in infinite loops
+
+**Visibility Detection** **NEW v2.2**:
+- VisibilityChecker initialized for each tab/page
+- Before click: checks if element is truly clickable
+- Detects modals/overlays blocking interaction
+- HTMLAnalyzerAgent verifies selector visibility
+- Context shows active overlays with recommendations
+- AI can use `dismiss_modal` action to close overlays
+- Automatic update on tab switch
+- **Parent hierarchy check**: Verifies all parent elements are visible, not just the target element
 
 ## Important Implementation Details
 
@@ -210,12 +239,14 @@ If still fails → Try Vision API fallback → Request human help → Bubble up 
 
 ### Context Optimization
 
-`BrowserManager.getPageContent()` extracts:
+`BrowserManager.getPageContent()` extracts **ONLY visible content** (v2.2):
 - `title`, `description` (meta tags)
-- `body` (first 3000 chars of visible text)
-- `links` (first 50 visible links with text + href)
-- `forms` (all forms with input details)
-- `buttons` (first 30 visible buttons)
+- `body` (first 3000 chars) - **walks DOM tree, extracts text only from visible elements**
+- `links` (first 50 visible links) - **filtered using checkVisibility()**
+- `forms` (visible forms only) - **filtered using checkVisibility()**, includes only visible inputs
+- `buttons` (first 30 visible buttons) - **filtered using checkVisibility()**
+
+**Key improvement**: Ignores hidden error messages, placeholder content, and pre-loaded elements that are display:none/visibility:hidden/opacity:0
 
 `ContextManager.summarizePageContent()` further reduces this:
 - `bodyPreview` (first 500 chars)
@@ -301,9 +332,11 @@ Key settings:
 ### CAPTCHA Detection Issues
 
 - **False positives from passive scripts** - Check `isActive` flag and `checkCaptchaVisibility()`
-- **Missing hidden CAPTCHAs** - Check CSS: `visibility: hidden`, `opacity: 0`, `display: none`
+- **Missing hidden CAPTCHAs** - ✅ FIXED v2.2: Uses native `checkVisibility()` API for reliable detection
 - **Wrong provider assumptions** - Use universal selectors, not hardcoded reCAPTCHA/hCaptcha
 - **Badge vs challenge confusion** - Check size: badge <100x100, challenge >250x250
+- **Elements in hidden containers** - ✅ FIXED v2.2: Uses `element.checkVisibility()` which automatically checks parent visibility
+- **Manual CSS checks unreliable** - ✅ FIXED v2.2: Replaced with native `checkVisibility()` (4-13x faster, more reliable)
 
 ### AI Behavior Issues
 
@@ -312,6 +345,10 @@ Key settings:
 - **AI tries non-existent actions** - Explicit action list in prompt with "use ONLY these"
 - **AI gets stuck in loops** - Loop detection triggers human help after 3 repeats
 - **AI uses clipboard instead of evaluate** - Added rule #6: prefer evaluate for text extraction
+- **AI sees hidden error messages** - ✅ FIXED v2.2: `getPageContent()` extracts only visible text using DOM tree walk + checkVisibility()
+- **AI confused by placeholder content** - ✅ FIXED v2.2: Pre-loaded hidden elements (display:none) are ignored during text extraction
+- **HTMLAnalyzerAgent generates selectors for hidden elements** - ✅ FIXED v2.2: `getHTML()` removes hidden elements before Cheerio parsing
+- **AI tries to click hidden buttons/links** - ✅ FIXED v2.2: Both getPageContent() and getHTML() filter hidden elements
 
 ### Context and Token Issues
 

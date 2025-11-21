@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer';
 import path from 'path';
 import fs from 'fs/promises';
+import { VisibilityChecker } from '../utils/VisibilityChecker.js';
 
 /**
  * Manages browser instances with persistent session support
@@ -13,6 +14,7 @@ export class BrowserManager {
     this.tabs = new Map(); // Store tabs with IDs
     this.activeTabId = null;
     this.sessionDir = config.sessionDir || './sessions';
+    this.visibilityChecker = null; // Will be initialized after launch
   }
 
   /**
@@ -57,6 +59,9 @@ export class BrowserManager {
       title: 'New Tab',
       url: 'about:blank',
     });
+
+    // Initialize VisibilityChecker for current page
+    this.visibilityChecker = new VisibilityChecker(this.page);
 
     console.log(`Browser launched with session: ${sessionName}`);
     return this.page;
@@ -129,21 +134,82 @@ export class BrowserManager {
 
     try {
       return await this.page.evaluate(() => {
-      // Remove script and style tags
-      const clone = document.cloneNode(true);
-      clone.querySelectorAll('script, style, noscript').forEach(el => el.remove());
+      /**
+       * Helper: Check if element is visible using checkVisibility() or fallback
+       */
+      const isVisible = (element) => {
+        if (!element) return false;
+
+        // Use native checkVisibility() if available
+        if (typeof element.checkVisibility === 'function') {
+          try {
+            return element.checkVisibility({
+              checkOpacity: true,
+              checkVisibilityCSS: true
+            });
+          } catch (e) {
+            // Fall through to fallback
+          }
+        }
+
+        // Fallback: manual checks
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+
+        return element.offsetParent !== null &&
+               style.display !== 'none' &&
+               style.visibility !== 'hidden' &&
+               style.opacity !== '0' &&
+               rect.width > 0 &&
+               rect.height > 0;
+      };
+
+      /**
+       * IMPROVED: Extract text only from visible elements
+       * Walks the DOM tree and collects text only from visible text nodes
+       */
+      const extractVisibleText = (rootElement) => {
+        const textParts = [];
+
+        const walk = (node) => {
+          // Skip if node is not visible
+          if (node.nodeType === Node.ELEMENT_NODE && !isVisible(node)) {
+            return;
+          }
+
+          // If it's a text node with content, add it
+          if (node.nodeType === Node.TEXT_NODE) {
+            const text = node.textContent.trim();
+            if (text.length > 0) {
+              textParts.push(text);
+            }
+          }
+
+          // Recurse into child nodes
+          if (node.childNodes) {
+            for (const child of node.childNodes) {
+              walk(child);
+            }
+          }
+        };
+
+        walk(rootElement);
+        return textParts.join(' ');
+      };
 
       // Extract text content from main areas
       const title = document.title;
-      const body = clone.body?.innerText || '';
+
+      // IMPROVED: Get only visible body text
+      const body = extractVisibleText(document.body);
 
       // Get metadata
       const description = document.querySelector('meta[name="description"]')?.content || '';
       const keywords = document.querySelector('meta[name="keywords"]')?.content || '';
 
-      // Get visible links
+      // IMPROVED: Get visible links using checkVisibility()
       const links = Array.from(document.querySelectorAll('a[href]'))
-        .filter(a => a.offsetParent !== null) // Only visible links
+        .filter(a => isVisible(a))
         .map(a => ({
           text: a.innerText.trim(),
           href: a.href,
@@ -151,22 +217,26 @@ export class BrowserManager {
         .filter(l => l.text.length > 0)
         .slice(0, 50); // Limit to 50 links
 
-      // Get forms
-      const forms = Array.from(document.querySelectorAll('form')).map(form => ({
-        action: form.action,
-        method: form.method,
-        inputs: Array.from(form.querySelectorAll('input, textarea, select')).map(input => ({
-          type: input.type,
-          name: input.name,
-          id: input.id,
-          placeholder: input.placeholder,
-          required: input.required,
-        })),
-      }));
+      // IMPROVED: Get only visible forms
+      const forms = Array.from(document.querySelectorAll('form'))
+        .filter(form => isVisible(form))
+        .map(form => ({
+          action: form.action,
+          method: form.method,
+          inputs: Array.from(form.querySelectorAll('input, textarea, select'))
+            .filter(input => isVisible(input))
+            .map(input => ({
+              type: input.type,
+              name: input.name,
+              id: input.id,
+              placeholder: input.placeholder,
+              required: input.required,
+            })),
+        }));
 
-      // Get buttons
+      // IMPROVED: Get visible buttons using checkVisibility()
       const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]'))
-        .filter(b => b.offsetParent !== null)
+        .filter(b => isVisible(b))
         .map(b => ({
           text: b.innerText || b.value || '',
           type: b.type,
@@ -220,6 +290,27 @@ export class BrowserManager {
 
     try {
       await this.page.waitForSelector(selector, { timeout: 5000 });
+
+      // NEW v2.2: Check if element is truly clickable
+      if (this.visibilityChecker) {
+        const clickabilityInfo = await this.visibilityChecker.isElementClickable(selector);
+
+        if (!clickabilityInfo.clickable) {
+          console.log(`⚠️  Element may not be clickable: ${clickabilityInfo.reason}`);
+
+          // If covered by modal, check for active modals
+          if (clickabilityInfo.isModal) {
+            console.log(`   Covered by: ${clickabilityInfo.coveringElement}`);
+            const modals = await this.visibilityChecker.detectModals();
+            if (modals.length > 0) {
+              console.log(`   Active modals detected: ${modals.length}`);
+              console.log(`   Consider dismissing modals before clicking`);
+            }
+          }
+
+          // Still attempt click with DOM method (may work despite warning)
+        }
+      }
 
       // IMPROVED: Use DOM click instead of coordinate click to avoid clicking on overlays/ads
       // Get element handle and click directly on the DOM element
@@ -351,13 +442,73 @@ export class BrowserManager {
 
   /**
    * Get raw HTML content from page
+   * IMPROVED v2.2: Removes hidden elements before returning HTML
    */
   async getHTML() {
     if (!this.page) throw new Error('Browser not launched');
 
     try {
       return await this.page.evaluate(() => {
-        return document.documentElement.outerHTML;
+        /**
+         * Helper: Check if element is visible using checkVisibility() or fallback
+         */
+        const isVisible = (element) => {
+          if (!element) return false;
+
+          // Use native checkVisibility() if available
+          if (typeof element.checkVisibility === 'function') {
+            try {
+              return element.checkVisibility({
+                checkOpacity: true,
+                checkVisibilityCSS: true
+              });
+            } catch (e) {
+              // Fall through to fallback
+            }
+          }
+
+          // Fallback: manual checks
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+
+          return element.offsetParent !== null &&
+                 style.display !== 'none' &&
+                 style.visibility !== 'hidden' &&
+                 style.opacity !== '0' &&
+                 rect.width > 0 &&
+                 rect.height > 0;
+        };
+
+        /**
+         * IMPROVED: Mark all hidden elements with data attribute, then remove from clone
+         * This ensures HTMLAnalyzerAgent (Cheerio) only sees visible content
+         */
+
+        // Mark all invisible elements in original document with a data attribute
+        const allElements = Array.from(document.querySelectorAll('*'));
+        const markerAttr = 'data-hidden-temp-' + Date.now();
+
+        for (const element of allElements) {
+          if (!isVisible(element)) {
+            element.setAttribute(markerAttr, 'true');
+          }
+        }
+
+        // Clone document (attributes are cloned too)
+        const clone = document.documentElement.cloneNode(true);
+
+        // Remove marked elements from clone
+        const markedInClone = clone.querySelectorAll(`[${markerAttr}]`);
+        markedInClone.forEach(el => el.remove());
+
+        // Clean up - remove marker from original document
+        allElements.forEach(el => {
+          if (el.hasAttribute(markerAttr)) {
+            el.removeAttribute(markerAttr);
+          }
+        });
+
+        return clone.outerHTML;
       });
     } catch (error) {
       if (error.message.includes('Execution context was destroyed')) {
@@ -391,15 +542,47 @@ export class BrowserManager {
       const isElementVisible = (element) => {
         if (!element) return false;
 
+        // IMPROVED: Use native checkVisibility() if available (most reliable)
+        if (typeof element.checkVisibility === 'function') {
+          try {
+            return element.checkVisibility({
+              checkOpacity: true,
+              checkVisibilityCSS: true
+            });
+          } catch (e) {
+            // Fall through to manual check
+          }
+        }
+
+        // Fallback for older browsers - manual checks
         const rect = element.getBoundingClientRect();
         const style = window.getComputedStyle(element);
 
-        return rect.width > 0 &&
+        // Check element itself
+        const elementVisible = rect.width > 0 &&
                rect.height > 0 &&
                element.offsetParent !== null &&
                style.display !== 'none' &&
                style.visibility !== 'hidden' &&
                style.opacity !== '0';
+
+        if (!elementVisible) return false;
+
+        // Check parent visibility manually
+        let parent = element.parentElement;
+        while (parent && parent !== document.body) {
+          const parentStyle = window.getComputedStyle(parent);
+
+          if (parentStyle.display === 'none' ||
+              parentStyle.visibility === 'hidden' ||
+              parentStyle.opacity === '0') {
+            return false; // Parent is hidden, so element is not visible
+          }
+
+          parent = parent.parentElement;
+        }
+
+        return true;
       };
 
       /**
@@ -548,6 +731,8 @@ export class BrowserManager {
     if (switchToNew) {
       this.page = newPage;
       this.activeTabId = tabId;
+      // FIXED: Update VisibilityChecker for the new tab
+      this.visibilityChecker = new VisibilityChecker(newPage);
       await newPage.bringToFront();
       console.log(`✓ Created and switched to new tab: ${tabId} (${url})`);
     } else {
@@ -571,6 +756,9 @@ export class BrowserManager {
     this.activeTabId = tabId;
 
     await tab.page.bringToFront();
+
+    // NEW v2.2: Update VisibilityChecker for the new active tab
+    this.visibilityChecker = new VisibilityChecker(this.page);
 
     console.log(`✓ Switched to tab: ${tabId} (${tab.url})`);
     return true;
@@ -714,21 +902,82 @@ export class BrowserManager {
     const page = tab.page;
 
     return await page.evaluate(() => {
-      // Remove script and style tags
-      const clone = document.cloneNode(true);
-      clone.querySelectorAll('script, style, noscript').forEach(el => el.remove());
+      /**
+       * Helper: Check if element is visible using checkVisibility() or fallback
+       */
+      const isVisible = (element) => {
+        if (!element) return false;
+
+        // Use native checkVisibility() if available
+        if (typeof element.checkVisibility === 'function') {
+          try {
+            return element.checkVisibility({
+              checkOpacity: true,
+              checkVisibilityCSS: true
+            });
+          } catch (e) {
+            // Fall through to fallback
+          }
+        }
+
+        // Fallback: manual checks
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+
+        return element.offsetParent !== null &&
+               style.display !== 'none' &&
+               style.visibility !== 'hidden' &&
+               style.opacity !== '0' &&
+               rect.width > 0 &&
+               rect.height > 0;
+      };
+
+      /**
+       * IMPROVED: Extract text only from visible elements
+       * Walks the DOM tree and collects text only from visible text nodes
+       */
+      const extractVisibleText = (rootElement) => {
+        const textParts = [];
+
+        const walk = (node) => {
+          // Skip if node is not visible
+          if (node.nodeType === Node.ELEMENT_NODE && !isVisible(node)) {
+            return;
+          }
+
+          // If it's a text node with content, add it
+          if (node.nodeType === Node.TEXT_NODE) {
+            const text = node.textContent.trim();
+            if (text.length > 0) {
+              textParts.push(text);
+            }
+          }
+
+          // Recurse into child nodes
+          if (node.childNodes) {
+            for (const child of node.childNodes) {
+              walk(child);
+            }
+          }
+        };
+
+        walk(rootElement);
+        return textParts.join(' ');
+      };
 
       // Extract text content from main areas
       const title = document.title;
-      const body = clone.body?.innerText || '';
+
+      // IMPROVED: Get only visible body text
+      const body = extractVisibleText(document.body);
 
       // Get metadata
       const description = document.querySelector('meta[name="description"]')?.content || '';
       const keywords = document.querySelector('meta[name="keywords"]')?.content || '';
 
-      // Get visible links
+      // IMPROVED: Get visible links using checkVisibility()
       const links = Array.from(document.querySelectorAll('a[href]'))
-        .filter(a => a.offsetParent !== null) // Only visible links
+        .filter(a => isVisible(a))
         .map(a => ({
           text: a.innerText.trim(),
           href: a.href,
@@ -736,22 +985,26 @@ export class BrowserManager {
         .filter(l => l.text.length > 0)
         .slice(0, 50); // Limit to 50 links
 
-      // Get forms
-      const forms = Array.from(document.querySelectorAll('form')).map(form => ({
-        action: form.action,
-        method: form.method,
-        inputs: Array.from(form.querySelectorAll('input, textarea, select')).map(input => ({
-          type: input.type,
-          name: input.name,
-          id: input.id,
-          placeholder: input.placeholder,
-          required: input.required,
-        })),
-      }));
+      // IMPROVED: Get only visible forms
+      const forms = Array.from(document.querySelectorAll('form'))
+        .filter(form => isVisible(form))
+        .map(form => ({
+          action: form.action,
+          method: form.method,
+          inputs: Array.from(form.querySelectorAll('input, textarea, select'))
+            .filter(input => isVisible(input))
+            .map(input => ({
+              type: input.type,
+              name: input.name,
+              id: input.id,
+              placeholder: input.placeholder,
+              required: input.required,
+            })),
+        }));
 
-      // Get buttons
+      // IMPROVED: Get visible buttons using checkVisibility()
       const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]'))
-        .filter(b => b.offsetParent !== null)
+        .filter(b => isVisible(b))
         .map(b => ({
           text: b.innerText || b.value || '',
           type: b.type,
@@ -775,6 +1028,7 @@ export class BrowserManager {
 
   /**
    * Get HTML from specific tab
+   * IMPROVED v2.2: Removes hidden elements before returning HTML
    * @param {string} tabId - Tab ID (optional, uses active tab if not provided)
    * @returns {Promise<string>} HTML content
    */
@@ -787,7 +1041,65 @@ export class BrowserManager {
 
     const tab = this.tabs.get(targetTabId);
     return await tab.page.evaluate(() => {
-      return document.documentElement.outerHTML;
+      /**
+       * Helper: Check if element is visible using checkVisibility() or fallback
+       */
+      const isVisible = (element) => {
+        if (!element) return false;
+
+        // Use native checkVisibility() if available
+        if (typeof element.checkVisibility === 'function') {
+          try {
+            return element.checkVisibility({
+              checkOpacity: true,
+              checkVisibilityCSS: true
+            });
+          } catch (e) {
+            // Fall through to fallback
+          }
+        }
+
+        // Fallback: manual checks
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+
+        return element.offsetParent !== null &&
+               style.display !== 'none' &&
+               style.visibility !== 'hidden' &&
+               style.opacity !== '0' &&
+               rect.width > 0 &&
+               rect.height > 0;
+      };
+
+      /**
+       * IMPROVED: Mark all hidden elements with data attribute, then remove from clone
+       */
+
+      // Mark all invisible elements in original document
+      const allElements = Array.from(document.querySelectorAll('*'));
+      const markerAttr = 'data-hidden-temp-' + Date.now();
+
+      for (const element of allElements) {
+        if (!isVisible(element)) {
+          element.setAttribute(markerAttr, 'true');
+        }
+      }
+
+      // Clone document (attributes are cloned too)
+      const clone = document.documentElement.cloneNode(true);
+
+      // Remove marked elements from clone
+      const markedInClone = clone.querySelectorAll(`[${markerAttr}]`);
+      markedInClone.forEach(el => el.remove());
+
+      // Clean up - remove marker from original document
+      allElements.forEach(el => {
+        if (el.hasAttribute(markerAttr)) {
+          el.removeAttribute(markerAttr);
+        }
+      });
+
+      return clone.outerHTML;
     });
   }
 
@@ -822,5 +1134,79 @@ export class BrowserManager {
    */
   isRunning() {
     return this.browser !== null && this.browser.isConnected();
+  }
+
+  /**
+   * NEW v2.2: Check if element is clickable
+   * @param {string} selector - CSS selector
+   * @returns {Promise<Object>} Clickability info
+   */
+  async checkElementClickability(selector) {
+    if (!this.visibilityChecker) {
+      throw new Error('VisibilityChecker not initialized');
+    }
+    return await this.visibilityChecker.isElementClickable(selector);
+  }
+
+  /**
+   * NEW v2.2: Detect active modals/overlays on the page
+   * @returns {Promise<Array>} List of detected modals
+   */
+  async detectModals() {
+    if (!this.visibilityChecker) {
+      throw new Error('VisibilityChecker not initialized');
+    }
+    return await this.visibilityChecker.detectModals();
+  }
+
+  /**
+   * NEW v2.2: Try to dismiss/close a modal
+   * @param {Object} modal - Modal object from detectModals()
+   * @returns {Promise<Object>} Result with success status
+   */
+  async dismissModal(modal) {
+    if (!this.visibilityChecker) {
+      throw new Error('VisibilityChecker not initialized');
+    }
+    return await this.visibilityChecker.dismissModal(modal);
+  }
+
+  /**
+   * NEW v2.2: Get page overlay status (for context)
+   * @returns {Promise<Object>} Overlay status summary
+   */
+  async getPageOverlayStatus() {
+    if (!this.visibilityChecker) {
+      return {
+        hasActiveOverlays: false,
+        modalCount: 0,
+        modals: [],
+        recommendation: 'VisibilityChecker not initialized'
+      };
+    }
+    return await this.visibilityChecker.getPageOverlayStatus();
+  }
+
+  /**
+   * NEW v2.2: Get detailed visibility info for an element
+   * @param {string} selector - CSS selector
+   * @returns {Promise<Object>} Comprehensive visibility info
+   */
+  async getElementVisibilityInfo(selector) {
+    if (!this.visibilityChecker) {
+      throw new Error('VisibilityChecker not initialized');
+    }
+    return await this.visibilityChecker.getVisibilityInfo(selector);
+  }
+
+  /**
+   * NEW v2.2: Update VisibilityChecker when switching tabs
+   * @param {string} tabId - Tab ID
+   */
+  async updateVisibilityCheckerForTab(tabId) {
+    const tab = this.tabs.get(tabId);
+    if (tab && tab.page) {
+      this.visibilityChecker = new VisibilityChecker(tab.page);
+    }
   }
 }

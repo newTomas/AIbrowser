@@ -8,6 +8,7 @@ export class ContextManager {
     this.history = [];
     this.currentPageSummary = null;
     this.openTabs = []; // Track all open tabs
+    this.overlayStatus = null; // NEW v2.2: Track active overlays/modals
   }
 
   /**
@@ -99,6 +100,14 @@ export class ContextManager {
   }
 
   /**
+   * NEW v2.2: Update overlay/modal status
+   * @param {Object} status - Overlay status from BrowserManager.getPageOverlayStatus()
+   */
+  updateOverlayStatus(status) {
+    this.overlayStatus = status;
+  }
+
+  /**
    * Get context for Claude API
    */
   getContext() {
@@ -148,6 +157,23 @@ export class ContextManager {
       }
 
       context += '\n';
+    }
+
+    // NEW v2.2: Add overlay/modal status
+    if (this.overlayStatus && this.overlayStatus.hasActiveOverlays) {
+      context += '## ⚠️ Active Overlays Detected\n';
+      context += `${this.overlayStatus.modalCount} modal(s)/overlay(s) detected on page\n`;
+
+      this.overlayStatus.modals.forEach((modal, i) => {
+        context += `\nOverlay ${i + 1}:\n`;
+        context += `  Type: ${modal.type}\n`;
+        context += `  Dismissible: ${modal.dismissible ? 'Yes (has close button)' : 'No'}\n`;
+        context += `  Covers full screen: ${modal.coversFullScreen ? 'Yes' : 'No'}\n`;
+        context += `  Z-index: ${modal.zIndex}\n`;
+      });
+
+      context += `\n${this.overlayStatus.recommendation}\n`;
+      context += 'You can use dismiss_modal action to close modals, or request human help.\n\n';
     }
 
     // Add recent action history
@@ -231,6 +257,12 @@ Tab Management:
 - find_tab: Find tab by URL pattern
   Parameters: { urlPattern: "github.com" }
   Returns: { tabId: "tab-1" }
+
+Modal/Overlay Management:
+- dismiss_modal: Try to dismiss/close an active modal or overlay
+  Parameters: { modalIndex: 0 } (index from Active Overlays section, defaults to 0)
+  The system will try multiple methods: close button, Escape key, backdrop click
+  Use when overlays are blocking interaction with page elements
 
 Human Assistance:
 - request_human_help: Request help from user when you encounter CAPTCHA, 2FA, or unclear situations

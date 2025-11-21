@@ -4,6 +4,13 @@
 
 ## 🎉 Новые возможности v2.2
 
+### Улучшенное определение видимости (NEW!)
+- **🎯 VisibilityChecker** - проверка реальной кликабельности элементов
+- **🔍 Обнаружение модальных окон** - автоматическое определение overlay/popups
+- **⚡ Автозакрытие модалей** - попытка закрыть модали (кнопка, Escape, клик вне)
+- **📊 Информация о видимости** - AI видит, какие элементы перекрыты
+- **✅ Проверка селекторов** - HTMLAnalyzerAgent проверяет кликабельность
+
 ### Интерактивный CLI UI
 - **Навигация стрелками** - как в Claude Code, без ввода цифр
 - **Inline текстовый ввод** - удобный ввод данных прямо в терминале
@@ -171,6 +178,48 @@ src/
 ```
 
 ### Ключевые улучшения v2.2
+
+#### Улучшенное определение видимости
+
+**Проблема:** AI не понимает, что видимо на странице - пытается кликнуть за модалями, видит невидимые CAPTCHA, плохо определяет селекторы.
+
+**Решение v2.2: VisibilityChecker**
+```javascript
+// Проверка кликабельности элемента
+const info = await browserManager.checkElementClickability('#button');
+// {
+//   clickable: false,
+//   reason: 'Covered by overlay/modal',
+//   coveringElement: 'div.modal',
+//   isModal: true
+// }
+
+// Обнаружение модалей
+const modals = await browserManager.detectModals();
+// [
+//   {
+//     type: 'modal',
+//     dismissible: true,
+//     closeButtonSelector: 'button.close',
+//     coversFullScreen: true,
+//     zIndex: 9999
+//   }
+// ]
+
+// Попытка закрыть модаль (3 метода: кнопка, Escape, backdrop)
+const result = await browserManager.dismissModal(modal);
+// { success: true, method: 'close_button' }
+```
+
+**Что исправлено:**
+- ✅ AI видит, какие элементы перекрыты модалями
+- ✅ AI может закрывать модальные окна автоматически
+- ✅ HTMLAnalyzerAgent проверяет видимость селекторов
+- ✅ Контекст показывает активные overlay с рекомендациями
+- ✅ **Проверка родительских элементов** - игнорирует элементы в скрытых контейнерах
+- ✅ **Нативный checkVisibility()** - использует браузерный API для надёжной проверки (4-13x быстрее)
+- ✅ **Извлечение только видимого текста** - AI больше не видит скрытые сообщения об ошибках и placeholder контент
+- ✅ **Фильтрация HTML для HTMLAnalyzerAgent** - Cheerio парсит только видимые элементы, не генерирует селекторы для скрытого
 
 #### Интерактивный CLI UI
 
@@ -532,6 +581,28 @@ MIT
 
 ### v2.2.0 (Current)
 
+#### Visibility Detection 🔍 (MAJOR)
+- ✨ **NEW: VisibilityChecker** - проверка реальной кликабельности элементов
+  - `isElementClickable()` using `elementFromPoint()`
+  - Detects elements covered by overlays/modals
+  - Checks CSS visibility (display, visibility, opacity)
+  - Verifies element in viewport
+- ✨ **Modal/Overlay Detection** - автоматическое обнаружение popup
+  - Detects modals, dialogs, overlays by patterns
+  - Reports z-index, position, dimensions
+  - Identifies close buttons
+- ✨ **Auto-dismiss Modals** - попытка закрыть модали
+  - Method 1: Click close button
+  - Method 2: Press Escape key
+  - Method 3: Click backdrop (outside modal)
+- ✨ **AI Visibility Context** - AI видит статус overlay
+  - Context shows active modals with details
+  - HTMLAnalyzerAgent verifies selector visibility
+  - Warns if elements covered by modals
+- ✨ **New Action: dismiss_modal** - AI can dismiss overlays
+  - Parameters: `{ modalIndex: 0 }`
+  - Automatic method selection
+
 #### Security Fixes 🔒
 - 🛡️ **HIGH**: Fixed path traversal vulnerability via session names
   - Session names now sanitized: only `a-zA-Z0-9_-` allowed
@@ -541,7 +612,7 @@ MIT
   - Verification codes no longer logged in plaintext
   - Prevents credential harvesting from terminal history
 
-#### Added
+#### Interactive CLI UI 🎨
 - ✨ Interactive CLI UI with @clack/prompts
   - Arrow-key navigation (no number typing)
   - Inline text input with placeholders
@@ -550,9 +621,17 @@ MIT
 
 #### Changed
 - 🎨 Replaced readline with @clack/prompts for all user interactions
+- 🔧 BrowserManager: Auto-check clickability before click
+- 🔧 HTMLAnalyzerAgent: Verify selector visibility
+- 🔧 ContextManager: Show active overlay status
+- 🔧 MainAgent: Handle dismiss_modal action
 - 📦 Updated package.json to v2.2.0
-- 📝 Added SECURITY_FIXES.md documentation
-- 🧪 Added security test suite (test-security-fixes.js)
+
+#### Documentation
+- 📝 Added SECURITY_FIXES.md
+- 📝 Added V2.2.0_COMPLETION.md (Task 1)
+- 🧪 Added test-security-fixes.js
+- 🧪 Added test-visibility-detection.js
 
 ### v2.1.0
 

@@ -6,10 +6,12 @@ import * as cheerio from 'cheerio';
  * Two-stage approach:
  * 1. DOM Parsing: Extract structured data from HTML using cheerio
  * 2. Claude Analysis: Semantic understanding of what's important for user goal
+ * 3. NEW v2.2: Visibility verification for suggested selectors
  */
 export class HTMLAnalyzerAgent {
-  constructor(claudeClient) {
+  constructor(claudeClient, browserManager = null) {
     this.claudeClient = claudeClient;
+    this.browserManager = browserManager; // NEW v2.2: Optional BrowserManager for visibility checks
   }
 
   /**
@@ -26,6 +28,13 @@ export class HTMLAnalyzerAgent {
 
       // Stage 2: Claude Semantic Analysis
       const semanticAnalysis = await this.performSemanticAnalysis(domData, userGoal);
+
+      // Stage 3: NEW v2.2: Verify visibility of suggested selectors
+      if (this.browserManager && semanticAnalysis.keyActions) {
+        semanticAnalysis.keyActions = await this.verifySelectorsVisibility(
+          semanticAnalysis.keyActions
+        );
+      }
 
       return {
         success: true,
@@ -614,5 +623,56 @@ Respond in JSON format:
     });
 
     return analysis;
+  }
+
+  /**
+   * NEW v2.2: Verify visibility of selectors
+   * Checks if suggested selectors are actually clickable
+   *
+   * @param {Array} keyActions - Array of suggested actions with selectors
+   * @returns {Promise<Array>} Updated actions with visibility info
+   */
+  async verifySelectorsVisibility(keyActions) {
+    if (!this.browserManager) {
+      return keyActions; // No browser manager, skip verification
+    }
+
+    const verifiedActions = [];
+
+    for (const action of keyActions) {
+      if (!action.selector) {
+        verifiedActions.push(action);
+        continue;
+      }
+
+      try {
+        // Check if element is clickable
+        const visibilityInfo = await this.browserManager.checkElementClickability(action.selector);
+
+        // Add visibility information to action
+        const verifiedAction = {
+          ...action,
+          visibility: {
+            clickable: visibilityInfo.clickable,
+            reason: visibilityInfo.reason,
+            coveredBy: visibilityInfo.coveringElement || null,
+            isModal: visibilityInfo.isModal || false
+          }
+        };
+
+        // If not clickable, add warning
+        if (!visibilityInfo.clickable) {
+          verifiedAction.warning = `Element may not be clickable: ${visibilityInfo.reason}`;
+        }
+
+        verifiedActions.push(verifiedAction);
+      } catch (error) {
+        // If verification fails, keep original action
+        console.log(`⚠️  Could not verify visibility for ${action.selector}: ${error.message}`);
+        verifiedActions.push(action);
+      }
+    }
+
+    return verifiedActions;
   }
 }

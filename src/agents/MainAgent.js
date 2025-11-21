@@ -14,7 +14,7 @@ export class MainAgent {
     this.browserManager = browserManager;
     this.claudeClient = claudeClient;
     this.contextManager = contextManager;
-    this.htmlAnalyzer = new HTMLAnalyzerAgent(claudeClient);
+    this.htmlAnalyzer = new HTMLAnalyzerAgent(claudeClient, browserManager); // NEW v2.2: Pass browserManager for visibility checks
     this.visionFallback = new VisionFallbackAgent(claudeClient, browserManager);
     this.humanAssistance = new HumanAssistanceManager();
     this.subAgents = new Map();
@@ -137,6 +137,14 @@ export class MainAgent {
 
           // Update context with compact analysis (not full HTML!)
           const summary = this.contextManager.summarizePageContent(pageContent);
+
+          // NEW v2.2: Check for active overlays/modals and update context
+          const overlayStatus = await this.browserManager.getPageOverlayStatus();
+          this.contextManager.updateOverlayStatus(overlayStatus);
+
+          if (overlayStatus.hasActiveOverlays) {
+            console.log(`⚠️  Detected ${overlayStatus.modalCount} active overlay(s)/modal(s)`);
+          }
           this.contextManager.currentPageSummary = {
             ...summary,
             // Only store compact summary, not full analysis
@@ -481,6 +489,31 @@ export class MainAgent {
             return { success: true, tabId: foundTabId };
           }
           return { success: false, error: 'Tab not found' };
+
+        // NEW v2.2: Dismiss modal/overlay
+        case 'dismiss_modal':
+          const modals = await this.browserManager.detectModals();
+          if (modals.length === 0) {
+            return { success: false, error: 'No modals detected' };
+          }
+
+          const modalIndex = parameters.modalIndex || 0;
+          if (modalIndex >= modals.length) {
+            return { success: false, error: `Modal index ${modalIndex} out of range (${modals.length} modals found)` };
+          }
+
+          const modal = modals[modalIndex];
+          console.log(`🔄 Attempting to dismiss modal: ${modal.type}`);
+
+          const dismissResult = await this.browserManager.dismissModal(modal);
+
+          if (dismissResult.success) {
+            console.log(`✅ Modal dismissed successfully using ${dismissResult.method}`);
+            return { success: true, method: dismissResult.method };
+          } else {
+            console.log(`❌ Could not dismiss modal`);
+            return { success: false, error: 'Could not dismiss modal', attemptedMethod: dismissResult.method };
+          }
 
         // NEW: AI can explicitly request human help
         case 'request_human_help':
