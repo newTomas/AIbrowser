@@ -129,7 +129,7 @@ ${pageContent.description ? `- Description: ${pageContent.description}` : ''}
 
 Available elements:
 ${pageContent.buttons?.length > 0 ? `Buttons: ${pageContent.buttons.map(b => b.text).join(', ')}` : ''}
-${pageContent.links?.length > 0 ? `\nLinks (showing first 10): ${pageContent.links.slice(0, 10).map(l => l.text).join(', ')}` : ''}
+${pageContent.links?.length > 0 ? `\nLinks: ${pageContent.links.map(l => l.text).join(', ')}` : ''}
 ${pageContent.forms?.length > 0 ? `\nForms: ${pageContent.forms.length} form(s) detected` : ''}
 
 User Goal: ${userGoal}

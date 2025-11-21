@@ -294,6 +294,16 @@ export class BrowserManager {
       matchText = selector.text;
     }
 
+    // NEW: Handle :contains() pseudo-selector for disambiguation
+    if (typeof cssSelector === 'string' && cssSelector.includes(':contains(')) {
+      const match = cssSelector.match(/^(.+):contains\("([^"]+)"\)$/);
+      if (match) {
+        cssSelector = match[1]; // Base selector
+        matchText = match[2]; // Text to match
+        console.log(`🎯 Detected :contains() selector - base: "${cssSelector}", text: "${matchText}"`);
+      }
+    }
+
     // IMPROVED: Ensure current page is brought to front before interacting
     try {
       await this.page.bringToFront();
@@ -420,7 +430,10 @@ export class BrowserManager {
       console.log(`✅ Click completed successfully`);
       return { success: true };
     } catch (error) {
-      // Try clicking by text content
+      // Try clicking by text content (fallback)
+      console.log(`⚠️  CSS selector failed, trying text fallback: "${selector}"`);
+      console.log(`   Error: ${error.message}`);
+
       try {
         const element = await this.page.evaluateHandle((text) => {
           const elements = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"], div[role="button"]'));
@@ -428,13 +441,16 @@ export class BrowserManager {
         }, selector);
 
         if (element) {
+          console.log(`✅ Found element by text: "${selector}"`);
           // Scroll into view and click
           await element.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }));
           await new Promise(resolve => setTimeout(resolve, 300));
           await element.click();
+          console.log(`✅ Text-based click completed successfully`);
           return { success: true };
         }
       } catch (innerError) {
+        console.log(`❌ Text fallback also failed: ${innerError.message}`);
         return { success: false, error: `Could not find element: ${selector}` };
       }
     }

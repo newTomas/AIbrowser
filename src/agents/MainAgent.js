@@ -366,18 +366,23 @@ export class MainAgent {
 
       // Add actionable elements with SELECTORS
       if (summary.actionableElements && summary.actionableElements.length > 0) {
-        prompt += `\n### Actionable Elements (buttons, links, clickable blocks):\n`;
-        summary.actionableElements.slice(0, 12).forEach((elem, i) => {
-          const type = elem.type === 'button' ? 'Button' :
-                      elem.type === 'link' ? 'Link' :
-                      elem.type === 'clickable-block' ? 'Clickable' : 'Element';
+        prompt += `\n### Actionable Elements (buttons, links, clickable blocks) with CSS Selectors:\n`;
+        prompt += `🎯 IMPORTANT: Use the exact cssSelector values below for click/link actions. Do NOT generate your own selectors.\n\n`;
+        summary.actionableElements.forEach((elem, i) => {
+          const type = elem.type === 'button' ? '🔘 Button' :
+                      elem.type === 'link' ? '🔗 Link' :
+                      elem.type === 'clickable-block' ? '🖱️ Clickable' : '📍 Element';
 
-          prompt += `${i + 1}. ${type}: "${elem.displayText}" → selector: \`${elem.cssSelector}\``;
+          prompt += `${i + 1}. ${type}: "${elem.displayText}" → cssSelector: \`${elem.cssSelector}\``;
           if (elem.disabled) prompt += ` [DISABLED]`;
           if (elem.clickableBy) prompt += ` [${elem.clickableBy}]`;
           if (elem.href) prompt += ` → ${elem.href}`;
+          if (elem.disambiguated) {
+            prompt += ` [🎯 DISAMBIGUATED from: ${elem.originalSelector}]`;
+          }
           prompt += '\n';
         });
+        prompt += `\n💡 REMINDER: For clicking, use: {"action": "click", "parameters": {"selector": "COPY_CSS_SELECTOR_ABOVE"}}\n`;
       }
 
       // Add forms with input selectors
@@ -435,12 +440,29 @@ export class MainAgent {
 
         case 'click':
           // NEW v2.2.1: Handle different selector formats
+          const usedSelector = parameters.selector || parameters.text;
+
+          // Check if AI is using provided selectors vs generating its own
+          if (this.lastHtmlSummary && this.lastHtmlSummary.actionableElements) {
+            const providedSelectors = this.lastHtmlSummary.actionableElements.map(el => el.cssSelector);
+            const isUsingProvided = providedSelectors.includes(usedSelector);
+
+            if (!isUsingProvided) {
+              console.log(`⚠️  AI NOT using provided selector! Used: "${usedSelector}"`);
+              console.log(`📋 Available selectors were:`, providedSelectors.slice(0, 5)); // Show first 5
+            } else {
+              console.log(`✅ AI correctly using provided selector: "${usedSelector}"`);
+            }
+          }
+
           if (typeof parameters.selector === 'object' && parameters.selector !== null) {
             // Object format: { selector: "div.option", text: "Программист" }
+            console.log(`🎯 AI clicking with object selector:`, parameters.selector);
             return await this.browserManager.click(parameters.selector);
           } else {
             // String format: "div.option" OR "Программист" (text fallback)
-            return await this.browserManager.click(parameters.selector || parameters.text);
+            console.log(`🎯 AI clicking with string selector: "${usedSelector}"`);
+            return await this.browserManager.click(usedSelector);
           }
 
         case 'type':

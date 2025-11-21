@@ -164,23 +164,54 @@ export class HTMLAnalyzerAgent {
       const href = $el.attr('href');
       const text = $el.text().trim();
 
-      // Skip empty links, anchors, and javascript:
-      if (!href || href.startsWith('#') || href.startsWith('javascript:')) {
+      // Skip empty href and javascript:
+      if (!href || href.startsWith('javascript:')) {
         return;
       }
 
-      // Skip if no visible text
-      if (!text || text.length === 0) {
+      // NEW v2.2.1: Keep anchor links like #spam (could be folder links)
+      // But skip generic anchor-only links like #top
+
+      // Get descriptive text from various sources
+      let descriptiveText = text;
+
+      // If no visible text, try to get from aria-label
+      if (!descriptiveText) {
+        descriptiveText = $el.attr('aria-label') || '';
+      }
+
+      // If still no text, try from title
+      if (!descriptiveText) {
+        descriptiveText = $el.attr('title') || '';
+      }
+
+      // If still no text, try from data attributes
+      if (!descriptiveText) {
+        descriptiveText = $el.attr('data-title') || $el.attr('data-name') || '';
+      }
+
+      // Try to extract text from href (for #folder patterns)
+      if (!descriptiveText && href.startsWith('#')) {
+        const folderName = href.replace('#', '').replace(/-/g, ' ');
+        descriptiveText = folderName.charAt(0).toUpperCase() + folderName.slice(1);
+      }
+
+      // Skip if still no descriptive text
+      if (!descriptiveText || descriptiveText.length === 0) {
         return;
       }
 
       links.push({
-        text: text.slice(0, 100),
+        text: descriptiveText.slice(0, 100),
         href,
         title: $el.attr('title') || '',
         ariaLabel: $el.attr('aria-label') || '',
         type: 'link',
         selector: this.generateBestSelector($el, el, $),
+        textSource: text ? 'content' :
+                   $el.attr('aria-label') ? 'aria-label' :
+                   $el.attr('title') ? 'title' :
+                   href.startsWith('#') ? 'href' : 'unknown',
       });
     });
 
@@ -278,7 +309,20 @@ export class HTMLAnalyzerAgent {
 
     $('button, input[type="button"], input[type="submit"], [role="button"]').each((i, el) => {
       const $el = $(el);
-      const text = $el.text().trim() || $el.attr('value') || '';
+
+      // NEW v2.2.1: Get text from button itself OR from child elements
+      let text = $el.text().trim() || $el.attr('value') || '';
+
+      // If button has no direct text, look for text in children (like <span>)
+      if (!text || text.length === 0) {
+        $el.children().each((j, child) => {
+          const childText = $(child).text().trim();
+          if (childText && childText.length > 0) {
+            text = childText;
+            return false; // Use first child with text
+          }
+        });
+      }
 
       if (text.length === 0) {
         return;
@@ -514,11 +558,25 @@ export class HTMLAnalyzerAgent {
     // Extract only top priority elements with selectors
     const actionableElements = [];
 
-    // Add clickable links and blocks (max 8)
+    // Add all clickable links and blocks (no limit)
     if (domData.links) {
-      domData.links.slice(0, 8).forEach(link => {
-        // Include only links with selectors (clickable elements)
-        if (link.selector) {
+      // Group links by selector to detect non-unique selectors (like emails)
+      const linkSelectorGroups = new Map();
+      const linksWithSelectors = domData.links.filter(link => link.selector);
+
+      linksWithSelectors.forEach(link => {
+        const selector = link.selector;
+        if (!linkSelectorGroups.has(selector)) {
+          linkSelectorGroups.set(selector, []);
+        }
+        linkSelectorGroups.get(selector).push(link);
+      });
+
+      // Process links and enhance non-unique selectors
+      linkSelectorGroups.forEach((linksGroup, selector) => {
+        if (linksGroup.length === 1) {
+          // Unique selector - use as-is
+          const link = linksGroup[0];
           actionableElements.push({
             type: link.type === 'clickable-block' ? 'clickable-block' : 'link',
             cssSelector: link.selector,
@@ -526,19 +584,94 @@ export class HTMLAnalyzerAgent {
             href: link.href,
             clickableBy: link.clickableBy || null,
           });
+        } else {
+          // Non-unique selector - create unique selectors using text content
+          linksGroup.forEach((link, index) => {
+            let uniqueSelector = selector;
+
+            // Try to create unique selector using text content (important for emails!)
+            if (link.text && link.text.trim().length > 0) {
+              // For email links, use exact text match for precision
+              const cleanText = link.text.trim().substring(0, 50); // Limit length
+              uniqueSelector = `${selector}:contains("${cleanText}")`;
+            } else {
+              // Fallback to nth-child if no text
+              uniqueSelector = `${selector}:nth-of-type(${index + 1})`;
+            }
+
+            actionableElements.push({
+              type: link.type === 'clickable-block' ? 'clickable-block' : 'link',
+              cssSelector: uniqueSelector,
+              displayText: link.text,
+              href: link.href,
+              clickableBy: link.clickableBy || null,
+              originalSelector: selector, // Keep original for reference
+              disambiguated: true,
+              groupIndex: index,
+            });
+          });
         }
       });
     }
 
     // Add top buttons (max 10)
     if (domData.buttons) {
-      domData.buttons.slice(0, 10).forEach(btn => {
-        actionableElements.push({
-          type: 'button',
-          cssSelector: btn.selector,  // USE THIS for click action
-          displayText: btn.text,       // For reference only (what user sees)
-          disabled: btn.disabled,
-        });
+      // Group buttons by selector to detect non-unique selectors
+      const selectorGroups = new Map();
+      domData.buttons.forEach(btn => {
+        const selector = btn.selector;
+        if (!selectorGroups.has(selector)) {
+          selectorGroups.set(selector, []);
+        }
+        selectorGroups.get(selector).push(btn);
+      });
+
+      // Process buttons and enhance non-unique selectors
+      selectorGroups.forEach((buttonsGroup, selector) => {
+        if (buttonsGroup.length === 1) {
+          // Unique selector - use as-is
+          const btn = buttonsGroup[0];
+          actionableElements.push({
+            type: 'button',
+            cssSelector: btn.selector,
+            displayText: btn.text,
+            disabled: btn.disabled,
+          });
+        } else {
+          // Non-unique selector - create unique selectors using text content
+          buttonsGroup.forEach((btn, index) => {
+            let uniqueSelector = selector;
+
+            // Try to create unique selector using text content
+            if (btn.text && btn.text.trim().length > 0) {
+              // Try multiple approaches for unique identification
+              const approaches = [
+                // Approach 1: Contains text selector
+                `${selector}:contains("${btn.text.trim()}")`,
+                // Approach 2: With text filter
+                `${selector}[text*="${btn.text.trim().substring(0, 20)}"]`,
+                // Approach 3: Nth-child with text description
+                `${selector}:nth-of-type(${index + 1})`,
+              ];
+
+              // Use the first approach that seems most specific
+              uniqueSelector = approaches[0]; // :contains() is most readable
+            } else {
+              // Fallback to nth-child if no text
+              uniqueSelector = `${selector}:nth-of-type(${index + 1})`;
+            }
+
+            actionableElements.push({
+              type: 'button',
+              cssSelector: uniqueSelector,
+              displayText: btn.text,
+              disabled: btn.disabled,
+              originalSelector: selector, // Keep original for reference
+              disambiguated: true,
+              groupIndex: index,
+            });
+          });
+        }
       });
     }
 
@@ -567,10 +700,11 @@ export class HTMLAnalyzerAgent {
     if (config.agent.verboseLogging) {
       console.log('\n🔍 === VERBOSE: All Clickable Elements Found ===');
       console.log(`Total actionable elements: ${actionableElements.length}`);
+      console.log(`Total links extracted: ${domData.links ? domData.links.length : 0}`);
 
       // Group by type
       const buttons = actionableElements.filter(el => el.type === 'button');
-      const links = actionableElements.filter(el => el.type === 'link');
+      const actionableLinks = actionableElements.filter(el => el.type === 'link');
       const clickableBlocks = actionableElements.filter(el => el.type === 'clickable-block');
 
       if (buttons.length > 0) {
@@ -581,9 +715,9 @@ export class HTMLAnalyzerAgent {
         });
       }
 
-      if (links.length > 0) {
-        console.log(`\n🔗 Links (${links.length}):`);
-        links.forEach((link, i) => {
+      if (actionableLinks.length > 0) {
+        console.log(`\n🔗 Links (${actionableLinks.length}):`);
+        actionableLinks.forEach((link, i) => {
           const href = link.href ? ` → ${link.href}` : '';
           console.log(`  ${i + 1}. "${link.displayText}" → ${link.cssSelector}${href}`);
         });
@@ -617,7 +751,7 @@ export class HTMLAnalyzerAgent {
       pagePurpose: semanticAnalysis?.pagePurpose || domData.metadata.title,
 
       // Key actionable elements with selectors
-      actionableElements: actionableElements.slice(0, 15), // Changed from topButtons to be more general
+      actionableElements: actionableElements.slice(0, 50), // Increased from 15 to 50 for better coverage
       forms,
 
       // Semantic insights (compact)
@@ -717,7 +851,7 @@ Respond in JSON format:
     // Buttons
     if (domData.buttons.length > 0) {
       prompt += `\n## Buttons (${domData.buttons.length})\n`;
-      domData.buttons.slice(0, 15).forEach(btn => {
+      domData.buttons.forEach(btn => {
         prompt += `- "${btn.text}"`;
         if (btn.id) prompt += ` (id: ${btn.id})`;
         if (btn.disabled) prompt += ` [DISABLED]`;

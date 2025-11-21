@@ -151,7 +151,7 @@ export class ContextManager {
 
       if (this.currentPageSummary.importantLinks && this.currentPageSummary.importantLinks.length > 0) {
         context += '\nImportant links:\n';
-        this.currentPageSummary.importantLinks.slice(0, 10).forEach(link => {
+        this.currentPageSummary.importantLinks.forEach(link => {
           context += `  - ${link}\n`;
         });
       }
@@ -292,12 +292,12 @@ Task Completion:
   Parameters: { summary: "Successfully logged in and sent message" }
 
 IMPORTANT RULES:
-1. ALWAYS use CSS selectors from "Page Analysis Summary" section when available
+1. 🎯 **CRITICAL**: ALWAYS use the exact cssSelector values provided in "Actionable Elements" section. Do NOT generate your own selectors or use evaluate as a fallback for clicking.
 2. Use request_human_help for CAPTCHA, 2FA, or when genuinely stuck
 3. Do NOT use actions not listed above (e.g., screenshot - these don't exist)
 4. After create_tab, the system automatically switches to it - no need for switch_tab
-5. Use HTML analysis data to find precise selectors instead of guessing
-6. Use evaluate to extract text/data from page elements directly - DO NOT rely on clipboard or copy buttons
+5. The HTML analysis has already extracted optimal selectors - use them directly
+6. Use evaluate only for data extraction, NOT for clicking elements with known selectors
 7. When working with multiple tabs:
    - Check "Open Tabs" section to see all available tabs
    - To access content from another tab, use switch_tab FIRST, then perform actions

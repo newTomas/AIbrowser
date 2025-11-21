@@ -141,10 +141,10 @@ export class SubAgent {
       prompt += `\nPage Summary:\n`;
       prompt += `Title: ${context.pageContent.title}\n`;
       if (context.pageContent.buttons?.length > 0) {
-        prompt += `Buttons: ${context.pageContent.buttons.slice(0, 10).join(', ')}\n`;
+        prompt += `Buttons: ${context.pageContent.buttons.join(', ')}\n`;
       }
       if (context.pageContent.links?.length > 0) {
-        prompt += `Links: ${context.pageContent.links.slice(0, 10).map(l => l.text).join(', ')}\n`;
+        prompt += `Links: ${context.pageContent.links.map(l => l.text).join(', ')}\n`;
       }
     }
 

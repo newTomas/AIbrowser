@@ -196,14 +196,14 @@ export class HumanAssistanceManager {
     // Show available elements
     if (pageContent.buttons?.length > 0) {
       details += '\n\n📌 Available buttons:\n';
-      pageContent.buttons.slice(0, 10).forEach((btn, i) => {
+      pageContent.buttons.forEach((btn, i) => {
         details += `  ${i + 1}. ${btn.text} ${btn.id ? `(id: ${btn.id})` : ''}\n`;
       });
     }
 
     if (pageContent.links?.length > 0) {
-      details += '\n🔗 Available links (first 10):\n';
-      pageContent.links.slice(0, 10).forEach((link, i) => {
+      details += '\n🔗 Available links:\n';
+      pageContent.links.forEach((link, i) => {
         details += `  ${i + 1}. ${link.text}\n`;
       });
     }
