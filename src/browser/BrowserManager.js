@@ -69,14 +69,35 @@ export class BrowserManager {
     if (!this.page) throw new Error('Browser not launched');
 
     try {
+      // IMPROVED: Use domcontentloaded by default for faster navigation
       await this.page.goto(url, {
-        waitUntil: 'networkidle2',
-        timeout: 30000,
+        waitUntil: options.waitUntil || 'domcontentloaded',
+        timeout: options.timeout || 15000,
         ...options,
       });
+
+      // Small delay to let page stabilize
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       return true;
     } catch (error) {
-      console.error(`Navigation error: ${error.message}`);
+      console.log(`⚠️  Navigation error: ${error.message}`);
+
+      // Check if it's a DNS/connection error (cannot be recovered)
+      if (error.message.includes('ERR_NAME_NOT_RESOLVED') ||
+          error.message.includes('ERR_CONNECTION_REFUSED') ||
+          error.message.includes('ERR_INTERNET_DISCONNECTED')) {
+        console.log('❌ Navigation failed - invalid URL or connection issue');
+        return false; // Cannot continue with this navigation
+      }
+
+      // For timeout errors, page may still be partially usable
+      if (error.message.includes('timeout')) {
+        console.log('⚠️  Navigation timeout - page may be partially loaded');
+        return true;
+      }
+
+      // For other errors, return false
       return false;
     }
   }
@@ -106,7 +127,8 @@ export class BrowserManager {
   async getPageContent() {
     if (!this.page) throw new Error('Browser not launched');
 
-    return await this.page.evaluate(() => {
+    try {
+      return await this.page.evaluate(() => {
       // Remove script and style tags
       const clone = document.cloneNode(true);
       clone.querySelectorAll('script, style, noscript').forEach(el => el.remove());
@@ -164,6 +186,23 @@ export class BrowserManager {
         buttons,
       };
     });
+    } catch (error) {
+      // Handle destroyed execution context or other errors
+      if (error.message.includes('Execution context was destroyed')) {
+        console.log('⚠️  Page context destroyed - returning minimal content');
+        return {
+          url: this.page.url() || 'unknown',
+          title: 'Error: Page context destroyed',
+          description: '',
+          keywords: '',
+          body: 'The page navigation failed and context was destroyed.',
+          links: [],
+          forms: [],
+          buttons: [],
+        };
+      }
+      throw error; // Re-throw other errors
+    }
   }
 
   /**
@@ -172,19 +211,45 @@ export class BrowserManager {
   async click(selector) {
     if (!this.page) throw new Error('Browser not launched');
 
+    // IMPROVED: Ensure current page is brought to front before interacting
+    try {
+      await this.page.bringToFront();
+    } catch (error) {
+      console.log('⚠️  Could not bring page to front:', error.message);
+    }
+
     try {
       await this.page.waitForSelector(selector, { timeout: 5000 });
-      await this.page.click(selector);
-      return { success: true };
+
+      // IMPROVED: Use DOM click instead of coordinate click to avoid clicking on overlays/ads
+      // Get element handle and click directly on the DOM element
+      const element = await this.page.$(selector);
+
+      if (element) {
+        // Scroll element into view first
+        await element.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }));
+
+        // Wait a bit for scroll and any animations
+        await new Promise(resolve => setTimeout(resolve, 300));
+
+        // Click the DOM element directly (bypasses visual overlays)
+        await element.click();
+        return { success: true };
+      } else {
+        return { success: false, error: `Element not found: ${selector}` };
+      }
     } catch (error) {
       // Try clicking by text content
       try {
         const element = await this.page.evaluateHandle((text) => {
-          const elements = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"]'));
+          const elements = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"], div[role="button"]'));
           return elements.find(el => el.innerText.includes(text) || el.value?.includes(text));
         }, selector);
 
         if (element) {
+          // Scroll into view and click
+          await element.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }));
+          await new Promise(resolve => setTimeout(resolve, 300));
           await element.click();
           return { success: true };
         }
@@ -196,13 +261,39 @@ export class BrowserManager {
 
   /**
    * Type text into input field
+   * IMPROVED: Clears existing content before typing
    */
   async type(selector, text, options = {}) {
     if (!this.page) throw new Error('Browser not launched');
 
+    // IMPROVED: Ensure current page is brought to front before interacting
+    try {
+      await this.page.bringToFront();
+    } catch (error) {
+      console.log('⚠️  Could not bring page to front:', error.message);
+    }
+
     try {
       await this.page.waitForSelector(selector, { timeout: 5000 });
-      await this.page.type(selector, text, { delay: 50, ...options });
+
+      // Get the input element
+      const element = await this.page.$(selector);
+
+      if (!element) {
+        return { success: false, error: `Element not found: ${selector}` };
+      }
+
+      // Clear existing content first
+      // Method 1: Select all and delete
+      await element.click({ clickCount: 3 }); // Triple-click to select all
+      await this.page.keyboard.press('Backspace'); // Delete selected text
+
+      // Small delay to ensure clear completed
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Type new text
+      await element.type(text, { delay: 50, ...options });
+
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
@@ -233,6 +324,28 @@ export class BrowserManager {
    */
   async evaluate(script, ...args) {
     if (!this.page) throw new Error('Browser not launched');
+
+    // If script is a string, handle different script formats
+    if (typeof script === 'string') {
+      const trimmedScript = script.trim();
+
+      // Check if it's a multi-line script or contains variable declarations
+      const isMultiLine = trimmedScript.includes('\n') || trimmedScript.includes(';');
+      const hasVariables = /\b(const|let|var)\b/.test(trimmedScript);
+
+      if (isMultiLine || hasVariables) {
+        // It's a full script - wrap in IIFE without adding 'return'
+        const wrappedScript = `(() => { ${trimmedScript} })()`;
+        return await this.page.evaluate(wrappedScript);
+      } else {
+        // It's a simple expression - can wrap with return
+        const cleanScript = trimmedScript.replace(/^return\s+/, '');
+        const wrappedScript = `(() => { return ${cleanScript}; })()`;
+        return await this.page.evaluate(wrappedScript);
+      }
+    }
+
+    // If already a function, use directly
     return await this.page.evaluate(script, ...args);
   }
 
@@ -242,8 +355,135 @@ export class BrowserManager {
   async getHTML() {
     if (!this.page) throw new Error('Browser not launched');
 
+    try {
+      return await this.page.evaluate(() => {
+        return document.documentElement.outerHTML;
+      });
+    } catch (error) {
+      if (error.message.includes('Execution context was destroyed')) {
+        console.log('⚠️  Page context destroyed - returning empty HTML');
+        return '<html><body>Error: Page context destroyed</body></html>';
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Check if CAPTCHA elements are actually visible on the page
+   * Universal approach - works with any CAPTCHA type
+   * @returns {Promise<object>} Visibility information
+   */
+  async checkCaptchaVisibility() {
+    if (!this.page) throw new Error('Browser not launched');
+
     return await this.page.evaluate(() => {
-      return document.documentElement.outerHTML;
+      const results = {
+        hasVisibleCaptcha: false,
+        visibleElements: [],
+        details: {},
+      };
+
+      /**
+       * Universal visibility check for any element
+       * @param {Element} element - DOM element to check
+       * @returns {boolean} True if element is actually visible to user
+       */
+      const isElementVisible = (element) => {
+        if (!element) return false;
+
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+
+        return rect.width > 0 &&
+               rect.height > 0 &&
+               element.offsetParent !== null &&
+               style.display !== 'none' &&
+               style.visibility !== 'hidden' &&
+               style.opacity !== '0';
+      };
+
+      /**
+       * Check if iframe size indicates active challenge (not passive badge)
+       * @param {DOMRect} rect - Bounding rectangle
+       * @returns {boolean} True if likely an active challenge
+       */
+      const isActiveChallenge = (rect) => {
+        const isLarge = rect.width > 250 || rect.height > 200;
+        const isBadge = rect.width < 100 && rect.height < 100;
+        return isLarge || !isBadge;
+      };
+
+      // Universal selectors for CAPTCHA-related iframes
+      const captchaIframeSelectors = [
+        'iframe[src*="recaptcha"]',
+        'iframe[src*="hcaptcha"]',
+        'iframe[src*="captcha"]',
+        'iframe[src*="challenge"]',
+        'iframe[title*="captcha" i]',
+        'iframe[title*="challenge" i]',
+      ];
+
+      // Check all CAPTCHA iframes
+      const allIframes = document.querySelectorAll(captchaIframeSelectors.join(', '));
+      for (const iframe of allIframes) {
+        if (isElementVisible(iframe)) {
+          const rect = iframe.getBoundingClientRect();
+
+          // Only report if it's likely an active challenge (not a small badge)
+          if (isActiveChallenge(rect)) {
+            results.hasVisibleCaptcha = true;
+            results.visibleElements.push({
+              type: 'captcha_iframe',
+              size: `${rect.width}x${rect.height}`,
+              src: iframe.src?.slice(0, 100) || 'unknown',
+            });
+          }
+        }
+      }
+
+      // Universal selectors for CAPTCHA elements (not iframes)
+      const captchaElementSelectors = [
+        '#cf-challenge-running',
+        '.cf-browser-verification',
+        '[class*="captcha"]',
+        '[id*="captcha"]',
+        '[class*="challenge"]',
+        '[id*="challenge"]',
+        '[role="dialog"][aria-label*="captcha" i]',
+        '[role="dialog"][aria-label*="verify" i]',
+      ];
+
+      // Check all CAPTCHA elements
+      const allElements = document.querySelectorAll(captchaElementSelectors.join(', '));
+      for (const element of allElements) {
+        if (isElementVisible(element)) {
+          results.hasVisibleCaptcha = true;
+          results.visibleElements.push({
+            type: 'captcha_element',
+            tagName: element.tagName.toLowerCase(),
+            className: element.className,
+            id: element.id,
+          });
+        }
+      }
+
+      // Check page body text for active captcha messages
+      const bodyText = document.body?.innerText?.toLowerCase() || '';
+      if (bodyText.includes('verify you are human') ||
+          bodyText.includes('complete the captcha') ||
+          bodyText.includes('checking your browser')) {
+        results.details.hasActiveText = true;
+
+        // Only mark as visible if text is prominent (page is short)
+        if (bodyText.length < 500) {
+          results.hasVisibleCaptcha = true;
+          results.visibleElements.push({
+            type: 'captcha_interstitial',
+          });
+        }
+      }
+
+      return results;
     });
   }
 
@@ -254,9 +494,10 @@ export class BrowserManager {
   /**
    * Create new tab
    * @param {string} url - Optional URL to navigate to
+   * @param {boolean} switchToNew - Automatically switch to new tab (default: true)
    * @returns {Promise<string>} Tab ID
    */
-  async createTab(url = 'about:blank') {
+  async createTab(url = 'about:blank', switchToNew = true) {
     if (!this.browser) throw new Error('Browser not launched');
 
     const newPage = await this.browser.newPage();
@@ -277,10 +518,42 @@ export class BrowserManager {
 
     // Navigate if URL provided
     if (url && url !== 'about:blank') {
-      await newPage.goto(url, { waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+      // IMPROVED: Use domcontentloaded instead of networkidle2 for faster loading
+      // This allows page to be usable even if some resources are still loading
+      try {
+        await newPage.goto(url, {
+          waitUntil: 'domcontentloaded', // Wait for DOM, not all resources
+          timeout: 15000, // Shorter timeout
+        });
+      } catch (error) {
+        // If navigation fails or times out, try to continue anyway
+        console.log(`⚠️  Navigation timeout/error in new tab, continuing anyway: ${error.message}`);
+      }
+
+      // Wait a bit more for page to stabilize
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Update tab info after navigation
+      const tab = this.tabs.get(tabId);
+      try {
+        tab.title = await newPage.title();
+        tab.url = newPage.url(); // url() is synchronous, not a Promise
+      } catch (error) {
+        tab.title = 'New Tab';
+        tab.url = url;
+      }
     }
 
-    console.log(`✓ Created new tab: ${tabId}`);
+    // FIXED: Automatically switch to new tab by default
+    if (switchToNew) {
+      this.page = newPage;
+      this.activeTabId = tabId;
+      await newPage.bringToFront();
+      console.log(`✓ Created and switched to new tab: ${tabId} (${url})`);
+    } else {
+      console.log(`✓ Created new tab: ${tabId} (${url})`);
+    }
+
     return tabId;
   }
 
@@ -394,8 +667,9 @@ export class BrowserManager {
    * Navigate in specific tab
    * @param {string} tabId - Tab ID
    * @param {string} url - URL to navigate to
+   * @param {boolean} switchToTab - Switch to tab after navigation (default: true)
    */
-  async gotoInTab(tabId, url) {
+  async gotoInTab(tabId, url, switchToTab = true) {
     if (!this.tabs.has(tabId)) {
       throw new Error(`Tab ${tabId} not found`);
     }
@@ -412,11 +686,109 @@ export class BrowserManager {
       tab.url = url;
       tab.title = await tab.page.title();
 
+      // FIXED: Switch to tab if requested
+      if (switchToTab) {
+        this.page = tab.page;
+        this.activeTabId = tabId;
+        await tab.page.bringToFront();
+      }
+
       return true;
     } catch (error) {
       console.error(`Navigation error in tab ${tabId}:`, error.message);
       return false;
     }
+  }
+
+  /**
+   * Get page content from specific tab (without switching)
+   * @param {string} tabId - Tab ID
+   * @returns {Promise<object>} Page content
+   */
+  async getPageContentFromTab(tabId) {
+    if (!this.tabs.has(tabId)) {
+      throw new Error(`Tab ${tabId} not found`);
+    }
+
+    const tab = this.tabs.get(tabId);
+    const page = tab.page;
+
+    return await page.evaluate(() => {
+      // Remove script and style tags
+      const clone = document.cloneNode(true);
+      clone.querySelectorAll('script, style, noscript').forEach(el => el.remove());
+
+      // Extract text content from main areas
+      const title = document.title;
+      const body = clone.body?.innerText || '';
+
+      // Get metadata
+      const description = document.querySelector('meta[name="description"]')?.content || '';
+      const keywords = document.querySelector('meta[name="keywords"]')?.content || '';
+
+      // Get visible links
+      const links = Array.from(document.querySelectorAll('a[href]'))
+        .filter(a => a.offsetParent !== null) // Only visible links
+        .map(a => ({
+          text: a.innerText.trim(),
+          href: a.href,
+        }))
+        .filter(l => l.text.length > 0)
+        .slice(0, 50); // Limit to 50 links
+
+      // Get forms
+      const forms = Array.from(document.querySelectorAll('form')).map(form => ({
+        action: form.action,
+        method: form.method,
+        inputs: Array.from(form.querySelectorAll('input, textarea, select')).map(input => ({
+          type: input.type,
+          name: input.name,
+          id: input.id,
+          placeholder: input.placeholder,
+          required: input.required,
+        })),
+      }));
+
+      // Get buttons
+      const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]'))
+        .filter(b => b.offsetParent !== null)
+        .map(b => ({
+          text: b.innerText || b.value || '',
+          type: b.type,
+          id: b.id,
+          class: b.className,
+        }))
+        .slice(0, 30);
+
+      return {
+        url: window.location.href,
+        title,
+        description,
+        keywords,
+        body: body.slice(0, 3000), // Limit body text
+        links,
+        forms,
+        buttons,
+      };
+    });
+  }
+
+  /**
+   * Get HTML from specific tab
+   * @param {string} tabId - Tab ID (optional, uses active tab if not provided)
+   * @returns {Promise<string>} HTML content
+   */
+  async getHTMLFromTab(tabId = null) {
+    const targetTabId = tabId || this.activeTabId;
+
+    if (!this.tabs.has(targetTabId)) {
+      throw new Error(`Tab ${targetTabId} not found`);
+    }
+
+    const tab = this.tabs.get(targetTabId);
+    return await tab.page.evaluate(() => {
+      return document.documentElement.outerHTML;
+    });
   }
 
   /**

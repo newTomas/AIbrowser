@@ -174,7 +174,7 @@ export class HTMLAnalyzerAgent {
   }
 
   /**
-   * Extract buttons with context
+   * Extract buttons with context and actionable selectors
    */
   extractButtons($) {
     const buttons = [];
@@ -187,13 +187,21 @@ export class HTMLAnalyzerAgent {
         return;
       }
 
+      const id = $el.attr('id') || '';
+      const classes = $el.attr('class') || '';
+      const ariaLabel = $el.attr('aria-label') || '';
+
+      // Generate best selector for this button
+      const selector = this.generateBestSelector($el, el);
+
       buttons.push({
         text: text.slice(0, 100),
         type: el.name === 'input' ? $el.attr('type') : 'button',
-        id: $el.attr('id') || '',
-        class: $el.attr('class') || '',
-        ariaLabel: $el.attr('aria-label') || '',
+        id,
+        class: classes,
+        ariaLabel,
         disabled: $el.attr('disabled') !== undefined,
+        selector, // IMPROVED: Add actionable selector
       });
     });
 
@@ -314,6 +322,130 @@ export class HTMLAnalyzerAgent {
       buttonCount: $('button, input[type="button"], input[type="submit"]').length,
       linkCount: $('a[href]').length,
       headingCount: $('h1, h2, h3, h4, h5, h6').length,
+    };
+  }
+
+  /**
+   * Generate best CSS selector for an element
+   * Priority: ID > unique attribute > class + text > nth-child
+   * @param {Cheerio} $el - Cheerio element
+   * @param {Element} el - Raw element
+   * @returns {string} Best CSS selector
+   */
+  generateBestSelector($el, el) {
+    // 1. Try ID (most reliable)
+    const id = $el.attr('id');
+    if (id && id.length > 0) {
+      return `#${id}`;
+    }
+
+    // 2. Try unique attributes (data-testid, name, etc.)
+    const testId = $el.attr('data-testid') || $el.attr('data-test-id');
+    if (testId) {
+      return `[data-testid="${testId}"]`;
+    }
+
+    const name = $el.attr('name');
+    if (name && name.length > 0) {
+      return `${el.name}[name="${name}"]`;
+    }
+
+    // 3. Try aria-label
+    const ariaLabel = $el.attr('aria-label');
+    if (ariaLabel && ariaLabel.length > 0) {
+      return `${el.name}[aria-label="${ariaLabel}"]`;
+    }
+
+    // 4. Try combination of class and text content
+    const classes = $el.attr('class');
+    const text = $el.text().trim();
+
+    if (classes && text && text.length > 0 && text.length < 50) {
+      const firstClass = classes.split(' ')[0];
+      if (firstClass) {
+        return `${el.name}.${firstClass}:contains("${text.slice(0, 30)}")`;
+      }
+    }
+
+    // 5. Fallback to class only
+    if (classes) {
+      const firstClass = classes.split(' ')[0];
+      return `${el.name}.${firstClass}`;
+    }
+
+    // 6. Last resort: element type
+    return el.name;
+  }
+
+  /**
+   * Get compact summary for main context (to avoid bloating)
+   * Returns only essential information
+   * @param {object} analysisResult - Full analysis result
+   * @returns {object} Compact summary
+   */
+  getCompactSummary(analysisResult) {
+    if (!analysisResult.success) {
+      return { available: false };
+    }
+
+    const { semanticAnalysis, domData } = analysisResult;
+
+    // Extract only top priority elements with selectors
+    const actionableElements = [];
+
+    // Add top buttons (max 10)
+    if (domData.buttons) {
+      domData.buttons.slice(0, 10).forEach(btn => {
+        actionableElements.push({
+          type: 'button',
+          text: btn.text,
+          selector: btn.selector,
+          disabled: btn.disabled,
+        });
+      });
+    }
+
+    // Add forms with input selectors (max 2 forms)
+    const forms = [];
+    if (domData.forms) {
+      domData.forms.slice(0, 2).forEach((form, idx) => {
+        const inputs = form.inputs.map(input => ({
+          type: input.type,
+          name: input.name,
+          id: input.id,
+          label: input.label,
+          selector: input.id ? `#${input.id}` : input.name ? `[name="${input.name}"]` : null,
+        }));
+
+        forms.push({
+          formIndex: idx,
+          method: form.method,
+          inputCount: inputs.length,
+          inputs: inputs.slice(0, 5), // Max 5 inputs per form
+        });
+      });
+    }
+
+    return {
+      available: true,
+      pageType: semanticAnalysis?.pageType || 'unknown',
+      pagePurpose: semanticAnalysis?.pagePurpose || domData.metadata.title,
+
+      // Key actionable elements with selectors
+      topButtons: actionableElements.slice(0, 10),
+      forms,
+
+      // Semantic insights (compact)
+      keyActions: semanticAnalysis?.recommendedActions?.slice(0, 3) || [],
+      potentialIssues: semanticAnalysis?.potentialIssues?.slice(0, 2) || [],
+
+      // Structure info
+      structure: {
+        hasLogin: forms.some(f => f.inputs.some(i => i.type === 'password')),
+        hasSearch: forms.some(f => f.inputs.some(i => i.type === 'search')),
+        buttonCount: domData.structure.buttonCount,
+        formCount: domData.structure.formCount,
+      },
     };
   }
 

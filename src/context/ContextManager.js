@@ -7,6 +7,7 @@ export class ContextManager {
     this.maxContextSize = maxContextSize;
     this.history = [];
     this.currentPageSummary = null;
+    this.openTabs = []; // Track all open tabs
   }
 
   /**
@@ -91,10 +92,27 @@ export class ContextManager {
   }
 
   /**
+   * Update list of open tabs
+   */
+  updateTabs(tabs) {
+    this.openTabs = tabs;
+  }
+
+  /**
    * Get context for Claude API
    */
   getContext() {
     let context = '';
+
+    // Add open tabs information (if multiple tabs exist)
+    if (this.openTabs && this.openTabs.length > 1) {
+      context += '## Open Tabs\n';
+      this.openTabs.forEach((tab, i) => {
+        const activeMarker = tab.active ? '→ ' : '  ';
+        context += `${activeMarker}${tab.id}: ${tab.title} (${tab.url})\n`;
+      });
+      context += '\nIMPORTANT: To access content from other tabs, use switch_tab action first!\n\n';
+    }
 
     // Add current page summary
     if (this.currentPageSummary) {
@@ -158,42 +176,99 @@ export class ContextManager {
   getFullContext(userGoal) {
     const systemContext = `You are an AI browser automation agent with advanced capabilities. You can control a web browser to accomplish user goals.
 
-Available actions:
-- navigate(url): Navigate to a URL in the current tab
-- click(selector): Click an element (use text content or CSS selector)
-- type(selector, text): Type text into an input field
-- scroll(direction): Scroll the page (up/down)
-- wait(seconds): Wait for specified seconds
-- screenshot(): Take a screenshot
-- evaluate(script): Execute JavaScript on the page
+AVAILABLE ACTIONS (use ONLY these):
+
+Basic Navigation:
+- navigate: Navigate to URL
+  Parameters: { url: "https://example.com" }
+
+- click: Click an element (use provided CSS selector from HTML analysis, or text content)
+  Parameters: { selector: "#button-id" } or { text: "Click me" }
+
+- type: Type text into input field
+  Parameters: { selector: "#email", text: "user@example.com" }
+
 - press_enter: Press Enter key
+  Parameters: {}
+
 - go_back: Go back to previous page
+  Parameters: {}
+
+- scroll: Scroll the page
+  Parameters: { direction: "down" } or { direction: "up" }
+
+- wait: Wait for specified seconds
+  Parameters: { seconds: 2 }
+
+- evaluate: Execute JavaScript on page to extract data or get element information
+  Parameters: { script: "document.querySelector('#email').value" }
+  Use this to extract text/data directly from page instead of copying to clipboard
+
+  Simple expressions (NO semicolons, NO const/let/var):
+    - Get text: { script: "document.querySelector('.result').textContent" }
+    - Get all links: { script: "Array.from(document.querySelectorAll('a')).map(a => a.href)" }
+    - Check state: { script: "document.querySelector('#btn').disabled" }
+
+  Multi-line scripts (with variables, must end with return):
+    - { script: "const el = document.querySelector('#email'); return el ? el.value : null;" }
+    - { script: "const options = Array.from(document.querySelectorAll('select option')); return options.map(o => o.textContent);" }
 
 Tab Management:
-- create_tab(url): Create a new tab and optionally navigate to URL
-- switch_tab(tabId): Switch to a specific tab by ID
-- close_tab(tabId): Close a specific tab
-- list_tabs: List all open tabs with their IDs and URLs
-- find_tab(urlPattern): Find tab by URL pattern
+- create_tab: Create new tab and navigate to URL (automatically switches to it)
+  Parameters: { url: "https://example.com" }
+  Returns: { tabId: "tab-1" }
 
-Example use case: "Open Gmail in one tab and Twitter in another"
-1. create_tab("https://gmail.com") -> returns {tabId: "tab-1"}
-2. create_tab("https://twitter.com") -> returns {tabId: "tab-2"}
-3. switch_tab(tabId: "tab-1") to work with Gmail
-4. switch_tab(tabId: "tab-2") to work with Twitter
+- switch_tab: Switch to a specific tab
+  Parameters: { tabId: "tab-1" }
+
+- close_tab: Close specific tab
+  Parameters: { tabId: "tab-1" }
+
+- list_tabs: List all open tabs
+  Parameters: {}
+  Returns: [{ id: "tab-0", title: "...", url: "...", active: true }]
+
+- find_tab: Find tab by URL pattern
+  Parameters: { urlPattern: "github.com" }
+  Returns: { tabId: "tab-1" }
+
+Human Assistance:
+- request_human_help: Request help from user when you encounter CAPTCHA, 2FA, or unclear situations
+  Parameters: { reason: "CAPTCHA detected on login page", details: {} }
+  Use this instead of trying workarounds for human-only tasks
+
+Task Completion:
+- complete: Mark task as complete
+  Parameters: { summary: "Successfully logged in and sent message" }
+
+IMPORTANT RULES:
+1. ALWAYS use CSS selectors from "Page Analysis Summary" section when available
+2. Use request_human_help for CAPTCHA, 2FA, or when genuinely stuck
+3. Do NOT use actions not listed above (e.g., screenshot - these don't exist)
+4. After create_tab, the system automatically switches to it - no need for switch_tab
+5. Use HTML analysis data to find precise selectors instead of guessing
+6. Use evaluate to extract text/data from page elements directly - DO NOT rely on clipboard or copy buttons
+7. When working with multiple tabs:
+   - Check "Open Tabs" section to see all available tabs
+   - To access content from another tab, use switch_tab FIRST, then perform actions
+   - Do NOT navigate to URLs that are already open in other tabs - use switch_tab instead
+   - Example: If temp-mail.org is already open in tab-0, do switch_tab to tab-0 instead of navigate
 
 Current context:
 ${this.getContext()}
 
 User Goal: ${userGoal}
 
-Respond with your next action as JSON:
+Respond with ONLY a single JSON object (no markdown, no code blocks, no explanation):
 {
   "thought": "Your reasoning about what to do next",
   "action": "action_name",
   "parameters": { ... },
   "needsConfirmation": false
 }
+
+Example response for navigating to Google:
+{"thought":"I need to navigate to Google to start searching","action":"navigate","parameters":{"url":"https://google.com"},"needsConfirmation":false}
 
 Set needsConfirmation to true for destructive actions like:
 - Submitting forms with sensitive data

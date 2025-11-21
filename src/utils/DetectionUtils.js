@@ -9,38 +9,50 @@
  * @returns {object} Detection result with type and confidence
  */
 export function detectCaptcha(pageContent, html = '') {
-  const captchaIndicators = {
-    // reCAPTCHA
-    recaptcha: [
-      'g-recaptcha',
-      'recaptcha',
-      'grecaptcha',
-      '/recaptcha/',
-      'data-sitekey',
-    ],
-    // hCaptcha
-    hcaptcha: [
-      'h-captcha',
-      'hcaptcha',
-      'hcaptcha.com',
-    ],
-    // Cloudflare
-    cloudflare: [
-      'cf-challenge',
-      'cf_clearance',
-      'cloudflare',
-      'challenge-platform',
-      'ray-id',
-    ],
-    // Generic CAPTCHA indicators
-    generic: [
-      'captcha',
-      'human verification',
-      'verify you are human',
-      'prove you are not a robot',
-      'security check',
-    ],
-  };
+  // Universal CAPTCHA indicators - works with any CAPTCHA provider
+  const passiveCaptchaIndicators = [
+    // Generic CAPTCHA keywords
+    'captcha',
+    'recaptcha',
+    'hcaptcha',
+    'grecaptcha',
+    'g-recaptcha',
+    'h-captcha',
+    'data-sitekey',
+    // Challenge-related
+    'challenge',
+    'cf-challenge',
+    'challenge-platform',
+    // Verification-related
+    'verification',
+    'human verification',
+    'verify you are human',
+    'prove you are not a robot',
+    'security check',
+    // Service-specific
+    '/recaptcha/',
+    'hcaptcha.com',
+    'cloudflare',
+    'cf_clearance',
+    'ray-id',
+  ];
+
+  // Indicators of ACTIVE captcha challenge (not just passive scripts)
+  const activeCaptchaIndicators = [
+    'challenge-form',
+    'captcha-checkbox',
+    'recaptcha-checkbox',
+    'captcha visible',
+    'complete the captcha',
+    'solve the captcha',
+    'please verify',
+    'i\'m not a robot',
+    'verify you\'re human',
+    'security challenge',
+    'checking your browser',
+    'just a moment',
+    'please wait while we verify',
+  ];
 
   const url = pageContent?.url || '';
   const title = pageContent?.title?.toLowerCase() || '';
@@ -49,44 +61,82 @@ export function detectCaptcha(pageContent, html = '') {
 
   const detected = {
     found: false,
-    type: null,
     confidence: 0,
     indicators: [],
+    isActive: false, // Indicates if captcha is actively blocking (not just passive scripts)
   };
 
-  // Check URL
-  if (url.includes('recaptcha') || url.includes('hcaptcha') || url.includes('cloudflare')) {
+  // Check URL - high confidence if URL itself is a captcha service
+  const captchaUrlKeywords = ['recaptcha', 'hcaptcha', 'captcha', 'challenge', 'verify'];
+  if (captchaUrlKeywords.some(keyword => url.includes(keyword))) {
     detected.found = true;
     detected.confidence = 0.9;
+    detected.isActive = true;
     detected.indicators.push('URL contains CAPTCHA service');
+    return detected; // Return early - definitely active captcha
   }
 
-  // Check each type
-  for (const [type, keywords] of Object.entries(captchaIndicators)) {
-    for (const keyword of keywords) {
-      if (
-        title.includes(keyword) ||
-        bodyText.includes(keyword) ||
-        htmlLower.includes(keyword)
-      ) {
-        detected.found = true;
-        detected.type = type;
-        detected.indicators.push(`Keyword found: ${keyword}`);
+  // Check for ACTIVE captcha indicators first (higher priority)
+  let activeIndicatorCount = 0;
+  for (const indicator of activeCaptchaIndicators) {
+    if (title.includes(indicator) || bodyText.includes(indicator)) {
+      detected.found = true;
+      detected.isActive = true;
+      activeIndicatorCount++;
+      detected.indicators.push(`Active CAPTCHA indicator: ${indicator}`);
+      detected.confidence = Math.min(0.95, detected.confidence + 0.3);
+    }
+  }
 
-        // Increase confidence based on number of matches
-        detected.confidence = Math.min(0.95, detected.confidence + 0.2);
-      }
+  // If we found active indicators, we're confident this is a real challenge
+  if (activeIndicatorCount > 0) {
+    detected.confidence = Math.min(1.0, detected.confidence + 0.2);
+    return detected;
+  }
+
+  // Check for passive indicators - but be conservative
+  let passiveIndicatorCount = 0;
+  for (const keyword of passiveCaptchaIndicators) {
+    // Only check HTML for passive indicators, not title/body
+    // This prevents false positives from background scripts
+    if (htmlLower.includes(keyword)) {
+      detected.found = true;
+      passiveIndicatorCount++;
+      detected.indicators.push(`Passive element found: ${keyword}`);
+
+      // Lower confidence increase for passive indicators
+      detected.confidence = Math.min(0.5, detected.confidence + 0.1);
     }
   }
 
   // Check for common CAPTCHA patterns in page structure
   if (pageContent?.buttons) {
     const buttons = pageContent.buttons.map(b => b.text?.toLowerCase() || '');
-    if (buttons.some(b => b.includes('verify') || b.includes('continue') || b.includes('check'))) {
-      if (detected.found) {
-        detected.confidence = Math.min(1.0, detected.confidence + 0.1);
-      }
+    const hasVerifyButton = buttons.some(b =>
+      b.includes('verify') ||
+      b.includes('i\'m not a robot') ||
+      b.includes('complete captcha')
+    );
+
+    if (hasVerifyButton && detected.found) {
+      detected.isActive = true;
+      detected.confidence = Math.min(1.0, detected.confidence + 0.3);
+      detected.indicators.push('Verification button detected');
     }
+  }
+
+  // Special check: if page body is very short and contains captcha keywords
+  // it's likely an interstitial captcha page (active challenge)
+  if (bodyText.length < 500 && passiveIndicatorCount > 2) {
+    detected.isActive = true;
+    detected.confidence = Math.min(0.9, detected.confidence + 0.3);
+    detected.indicators.push('Appears to be captcha interstitial page');
+  }
+
+  // If we only found passive indicators (like background scripts), lower confidence significantly
+  if (detected.found && !detected.isActive && passiveIndicatorCount < 3) {
+    detected.confidence = Math.min(0.4, detected.confidence);
+    detected.indicators.push('Note: Only passive CAPTCHA elements found (may not need solving)');
   }
 
   return detected;
@@ -123,41 +173,78 @@ export function detect2FA(pageContent) {
     indicators: [],
   };
 
-  // Check for keywords
+  // Check for keywords (only in title or prominent body text)
+  // IMPROVED: Only trigger if keywords are in title OR very prominent in body
   for (const keyword of twoFAKeywords) {
-    if (title.includes(keyword) || bodyText.includes(keyword)) {
+    if (title.includes(keyword)) {
       detected.found = true;
-      detected.indicators.push(`Keyword found: ${keyword}`);
-      detected.confidence = Math.min(0.95, detected.confidence + 0.25);
+      detected.indicators.push(`Keyword in title: ${keyword}`);
+      detected.confidence = Math.min(0.95, detected.confidence + 0.3);
+    } else if (bodyText.length < 500 && bodyText.includes(keyword)) {
+      // Only in short body text (interstitial pages)
+      detected.found = true;
+      detected.indicators.push(`Keyword in short body: ${keyword}`);
+      detected.confidence = Math.min(0.8, detected.confidence + 0.2);
     }
   }
 
   // Check for forms with specific input types
+  // IMPROVED: More strict detection to avoid false positives
   if (pageContent?.forms) {
     for (const form of pageContent.forms) {
       const inputs = form.inputs || [];
 
-      // Look for code/PIN inputs
-      const hasCodeInput = inputs.some(input => {
+      // Look for code/PIN inputs with stricter criteria
+      const codeInputs = inputs.filter(input => {
         const name = (input.name || '').toLowerCase();
         const placeholder = (input.placeholder || '').toLowerCase();
         const id = (input.id || '').toLowerCase();
+        const label = (input.label || '').toLowerCase();
+        const type = (input.type || '').toLowerCase();
 
-        return (
-          name.includes('code') ||
+        // Exclude fields that are obviously NOT for 2FA
+        const isEmailField = type === 'email' || name.includes('email') || id.includes('email');
+        const isPasswordField = type === 'password';
+        const isPromoCode = name.includes('promo') || id.includes('promo') || placeholder.includes('promo');
+        const isCouponCode = name.includes('coupon') || id.includes('coupon');
+        const isZipCode = name.includes('zip') || name.includes('postal');
+
+        if (isEmailField || isPasswordField || isPromoCode || isCouponCode || isZipCode) {
+          return false;
+        }
+
+        // Must be specifically for OTP/verification codes
+        const isOTPField = (
           name.includes('otp') ||
-          name.includes('pin') ||
-          placeholder.includes('code') ||
-          placeholder.includes('enter') ||
-          id.includes('code') ||
-          id.includes('otp')
+          name.includes('verification') ||
+          name.includes('2fa') ||
+          name.includes('mfa') ||
+          id.includes('otp') ||
+          id.includes('verification') ||
+          placeholder.includes('verification code') ||
+          placeholder.includes('6-digit') ||
+          placeholder.includes('authenticator') ||
+          label.includes('verification code') ||
+          label.includes('authentication code')
         );
+
+        // Generic "code" fields only if combined with verification keywords
+        const isVerificationCode = (
+          (name.includes('code') || id.includes('code')) &&
+          (name.includes('verify') || id.includes('verify') ||
+           placeholder.includes('verify') || label.includes('verify') ||
+           placeholder.includes('enter code') || label.includes('enter code'))
+        );
+
+        return isOTPField || isVerificationCode;
       });
 
-      if (hasCodeInput) {
+      // Only mark as 2FA if we found OTP-specific fields
+      if (codeInputs.length > 0) {
         detected.found = true;
-        detected.confidence = Math.max(detected.confidence, 0.8);
-        detected.indicators.push('Form with code input detected');
+        // Lower confidence to reduce false positives
+        detected.confidence = Math.max(detected.confidence, 0.65);
+        detected.indicators.push(`Form with ${codeInputs.length} verification code input(s) detected`);
       }
     }
   }
@@ -290,16 +377,25 @@ export function detectHumanRequired(pageContent, html = '') {
     details: {},
   };
 
-  if (captcha.found && captcha.confidence > 0.6) {
+  // IMPROVED: Only request human help for ACTIVE captchas with high confidence
+  // Passive captcha elements (like background scripts) won't trigger help request
+  if (captcha.found && captcha.isActive && captcha.confidence > 0.7) {
     required.humanRequired = true;
     required.reasons.push('CAPTCHA detected');
     required.details.captcha = captcha;
+  } else if (captcha.found && !captcha.isActive) {
+    // Log passive captcha detection but don't request help
+    console.log('ℹ️  [Detection] Passive CAPTCHA elements detected (not blocking, no action needed)');
   }
 
-  if (twoFA.found && twoFA.confidence > 0.6) {
+  // IMPROVED: Higher threshold for 2FA to avoid false positives
+  if (twoFA.found && twoFA.confidence > 0.75) {
     required.humanRequired = true;
     required.reasons.push('2FA/Authentication code required');
     required.details.twoFA = twoFA;
+  } else if (twoFA.found && twoFA.confidence > 0.6) {
+    // Log but don't request help for medium confidence
+    console.log(`ℹ️  [Detection] Possible 2FA detected (confidence: ${(twoFA.confidence * 100).toFixed(0)}%) - not requesting help`);
   }
 
   if (ambiguity.found && ambiguity.confidence > 0.7) {

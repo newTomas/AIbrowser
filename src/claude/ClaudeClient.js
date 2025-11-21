@@ -46,15 +46,33 @@ export class ClaudeClient {
 
       // Try to parse as JSON
       try {
-        const decision = JSON.parse(assistantMessage);
+        // Remove markdown code blocks if present
+        let cleanedMessage = assistantMessage.trim();
+
+        // Remove ```json and ``` markers
+        if (cleanedMessage.startsWith('```')) {
+          cleanedMessage = cleanedMessage.replace(/^```json?\n?/i, '').replace(/```\s*$/, '').trim();
+        }
+
+        // Try to extract JSON if wrapped in explanation
+        const jsonMatch = cleanedMessage.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          cleanedMessage = jsonMatch[0];
+        }
+
+        const decision = JSON.parse(cleanedMessage);
         return { success: true, decision };
       } catch (parseError) {
+        console.error('Failed to parse Claude response as JSON:', parseError.message);
+        console.error('Response was:', assistantMessage.slice(0, 500));
+
         // If not valid JSON, return as text
         return {
           success: true,
           decision: {
-            thought: assistantMessage,
-            action: 'unknown',
+            thought: `Failed to parse response: ${assistantMessage.slice(0, 200)}`,
+            action: 'wait',
+            parameters: { seconds: 1 },
             requiresHumanInput: true,
           },
         };

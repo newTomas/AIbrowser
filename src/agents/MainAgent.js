@@ -21,6 +21,9 @@ export class MainAgent {
     this.currentGoal = null;
     this.maxSteps = 50;
     this.stepCount = 0;
+    this.lastHtmlSummary = null; // Store compact HTML summary
+    this.screenshotCount = 0; // Track screenshots to avoid overuse
+    this.recentActions = []; // Track recent actions to detect loops
   }
 
   /**
@@ -51,6 +54,10 @@ export class MainAgent {
         console.log(`Current URL: ${currentUrl || 'No page loaded'}`);
         console.log(`Active Tab: ${this.browserManager.getActiveTabId()}`);
 
+        // Update tabs information in context
+        const allTabs = await this.browserManager.getAllTabs();
+        this.contextManager.updateTabs(allTabs);
+
         // Get page content if browser is on a page
         let pageContent = null;
         let htmlAnalysis = null;
@@ -74,8 +81,22 @@ export class MainAgent {
             const humanRequired = detectHumanRequired(pageContent, html);
 
             if (humanRequired.humanRequired) {
-              console.log('\n⚠️  Human assistance required!');
+              console.log('\n⚠️  Human assistance may be required!');
               console.log('Reasons:', humanRequired.reasons.join(', '));
+
+              // IMPROVED: For CAPTCHA, double-check visibility before requesting help
+              if (humanRequired.details.captcha) {
+                const captchaVisibility = await this.browserManager.checkCaptchaVisibility();
+
+                if (!captchaVisibility.hasVisibleCaptcha) {
+                  console.log('ℹ️  CAPTCHA elements detected but NOT visible - likely passive scripts, continuing...');
+                  // Mark as resolved to prevent re-detection on next step
+                  this.humanAssistance.markResolved('captcha', currentUrl, 2);
+                  continue;
+                }
+
+                console.log('✓ Visible CAPTCHA confirmed:', captchaVisibility.visibleElements.map(e => e.type).join(', '));
+              }
 
               const assistanceResult = await this.handleHumanRequired(humanRequired, currentUrl);
 
@@ -95,19 +116,31 @@ export class MainAgent {
           }
 
           // Perform HTML analysis (DOM parsing + Claude semantic analysis)
+          // This runs in SEPARATE context to avoid bloating main conversation
           htmlAnalysis = await this.htmlAnalyzer.analyzePage(html, currentUrl, goal);
 
           if (htmlAnalysis.success) {
             console.log(`📄 HTML Analysis complete (${htmlAnalysis.semanticAnalysis?.pageType || 'unknown'})`);
+
+            // IMPROVED: Use compact summary instead of full analysis
+            const compactSummary = this.htmlAnalyzer.getCompactSummary(htmlAnalysis);
+
+            console.log(`✓ Extracted ${compactSummary.topButtons?.length || 0} actionable buttons with selectors`);
+            console.log(`✓ Extracted ${compactSummary.forms?.length || 0} forms with input selectors`);
+
+            // Store compact summary for context
+            this.lastHtmlSummary = compactSummary;
           } else {
             console.log('⚠️  HTML analysis failed, will use basic content');
+            this.lastHtmlSummary = null;
           }
 
-          // Update context with analysis
+          // Update context with compact analysis (not full HTML!)
           const summary = this.contextManager.summarizePageContent(pageContent);
           this.contextManager.currentPageSummary = {
             ...summary,
-            htmlAnalysis: htmlAnalysis.success ? htmlAnalysis.semanticAnalysis : null,
+            // Only store compact summary, not full analysis
+            compactHtmlSummary: this.lastHtmlSummary,
           };
         }
 
@@ -131,6 +164,32 @@ export class MainAgent {
           console.log(`Summary: ${action.summary || 'Task finished successfully'}`);
           console.log('='.repeat(60));
           return { success: true, summary: action.summary };
+        }
+
+        // IMPROVED: Check for infinite loops
+        const loopDetected = this.detectLoop(action);
+        if (loopDetected) {
+          console.log('\n⚠️  Loop detected! Same action repeated multiple times.');
+          console.log('Requesting human assistance to break the loop...');
+
+          const helpResult = await this.humanAssistance.requestHelp(
+            'AI is stuck in a loop - same action repeated',
+            {
+              url: currentUrl,
+              details: {
+                repeatedAction: action.action,
+                recentActions: this.recentActions.slice(-5),
+              },
+            }
+          );
+
+          if (helpResult.aborted) {
+            return { success: false, aborted: true };
+          }
+
+          // Clear recent actions to reset loop detection
+          this.recentActions = [];
+          continue;
         }
 
         // Check if action needs confirmation
@@ -283,30 +342,61 @@ export class MainAgent {
    * Get next action from Claude
    */
   async getNextAction(context, pageContent, htmlAnalysis) {
-    const prompt = context;
+    let prompt = context;
 
-    // Add HTML analysis insights if available
-    if (htmlAnalysis?.success && htmlAnalysis.semanticAnalysis) {
-      const semantic = htmlAnalysis.semanticAnalysis;
+    // IMPROVED: Add compact HTML summary if available (instead of full analysis)
+    if (this.lastHtmlSummary && this.lastHtmlSummary.available) {
+      const summary = this.lastHtmlSummary;
 
-      if (semantic.keyElements && semantic.keyElements.length > 0) {
-        prompt += `\n\n## Key Elements (from HTML analysis):\n`;
-        semantic.keyElements.forEach(el => {
-          prompt += `- ${el.type}: ${el.description} (priority: ${el.priority})\n`;
-          if (el.selector) prompt += `  Selector: ${el.selector}\n`;
+      prompt += `\n\n## Page Analysis Summary (from HTML parsing)\n`;
+      prompt += `Page Type: ${summary.pageType}\n`;
+      prompt += `Purpose: ${summary.pagePurpose}\n`;
+
+      // Add actionable elements with SELECTORS
+      if (summary.topButtons && summary.topButtons.length > 0) {
+        prompt += `\n### Actionable Buttons (with CSS selectors):\n`;
+        summary.topButtons.slice(0, 8).forEach((btn, i) => {
+          prompt += `${i + 1}. "${btn.text}" → selector: \`${btn.selector}\``;
+          if (btn.disabled) prompt += ` [DISABLED]`;
+          prompt += '\n';
         });
       }
 
-      if (semantic.recommendedActions && semantic.recommendedActions.length > 0) {
-        prompt += `\n## Recommended Actions:\n`;
-        semantic.recommendedActions.forEach(action => {
+      // Add forms with input selectors
+      if (summary.forms && summary.forms.length > 0) {
+        prompt += `\n### Forms (with input selectors):\n`;
+        summary.forms.forEach((form, i) => {
+          prompt += `Form ${i + 1} (${form.method}): ${form.inputCount} inputs\n`;
+          form.inputs.forEach(input => {
+            prompt += `  - ${input.type}`;
+            if (input.label) prompt += ` "${input.label}"`;
+            if (input.selector) prompt += ` → selector: \`${input.selector}\``;
+            prompt += '\n';
+          });
+        });
+      }
+
+      // Add recommended actions
+      if (summary.keyActions && summary.keyActions.length > 0) {
+        prompt += `\n### Recommended Actions:\n`;
+        summary.keyActions.forEach(action => {
           prompt += `- ${action}\n`;
         });
       }
+
+      // Add potential issues
+      if (summary.potentialIssues && summary.potentialIssues.length > 0) {
+        prompt += `\n### Potential Issues:\n`;
+        summary.potentialIssues.forEach(issue => {
+          prompt += `- ${issue}\n`;
+        });
+      }
+
+      prompt += `\nIMPORTANT: Use the provided CSS selectors for click() and type() actions. They are optimized for reliability.\n`;
     }
 
     return await this.claudeClient.getDecision(
-      'You are an autonomous browser automation agent with HTML analysis and Vision fallback capabilities.',
+      'You are an autonomous browser automation agent with HTML analysis capabilities. Use HTML analysis and provided CSS selectors instead of requesting screenshots when possible.',
       prompt,
       true // Include history for better context
     );
@@ -343,8 +433,12 @@ export class MainAgent {
           return { success: true };
 
         case 'screenshot':
+          this.screenshotCount++;
+          if (this.screenshotCount > 3) {
+            console.log('⚠️  Warning: Too many screenshots. Prefer HTML analysis for better efficiency.');
+          }
           const screenshot = await this.browserManager.screenshot();
-          console.log('📸 Screenshot taken');
+          console.log(`📸 Screenshot taken (${this.screenshotCount} total)`);
           return { success: true, screenshot };
 
         case 'evaluate':
@@ -388,6 +482,38 @@ export class MainAgent {
           }
           return { success: false, error: 'Tab not found' };
 
+        // NEW: AI can explicitly request human help
+        case 'request_human_help':
+          console.log('\n🤖 AI requested human assistance');
+          const reason = parameters.reason || 'AI needs help with current task';
+          const currentUrl = await this.browserManager.getCurrentUrl();
+          const pageContent = await this.browserManager.getPageContent();
+
+          const helpResult = await this.humanAssistance.requestHelp(reason, {
+            url: currentUrl,
+            details: parameters.details || {},
+            pageInfo: {
+              title: pageContent.title,
+              buttons: pageContent.buttons?.length || 0,
+              forms: pageContent.forms?.length || 0,
+            },
+          });
+
+          if (helpResult.aborted) {
+            return { success: false, aborted: true };
+          }
+
+          // Return user-provided data if available
+          return {
+            success: helpResult.resolved,
+            humanHelped: true,
+            action: helpResult.method || 'manual',
+            userData: helpResult.userData || null, // Include user data if provided
+            message: helpResult.userData
+              ? `User provided: ${helpResult.userData}`
+              : 'User completed manually',
+          };
+
         default:
           return { success: false, error: `Unknown action: ${actionType}` };
       }
@@ -424,6 +550,43 @@ export class MainAgent {
         params.includes('payment') ||
         params.includes('submit')
       ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Detect if AI is stuck in a loop
+   * @param {object} action - Current action
+   * @returns {boolean} True if loop detected
+   */
+  detectLoop(action) {
+    // Track current action
+    const actionSignature = `${action.action}:${JSON.stringify(action.parameters || {})}`;
+    this.recentActions.push({
+      signature: actionSignature,
+      action: action.action,
+      timestamp: Date.now(),
+    });
+
+    // Keep only last 10 actions
+    if (this.recentActions.length > 10) {
+      this.recentActions = this.recentActions.slice(-10);
+    }
+
+    // Check if same action repeated 3+ times in last 5 actions
+    const last5 = this.recentActions.slice(-5);
+    const actionCounts = {};
+
+    for (const item of last5) {
+      actionCounts[item.signature] = (actionCounts[item.signature] || 0) + 1;
+    }
+
+    // If any action appears 3+ times in last 5 actions, it's a loop
+    for (const count of Object.values(actionCounts)) {
+      if (count >= 3) {
         return true;
       }
     }
@@ -483,6 +646,7 @@ export class MainAgent {
       subAgentsUsed: this.subAgents.size,
       humanAssistanceRequests: this.humanAssistance.getHistory().length,
       visionAPIUsage: this.visionFallback.getStats().usageCount,
+      screenshotCount: this.screenshotCount, // IMPROVED: Track screenshots
     };
   }
 
@@ -492,6 +656,9 @@ export class MainAgent {
   reset() {
     this.currentGoal = null;
     this.stepCount = 0;
+    this.screenshotCount = 0; // IMPROVED: Reset screenshot counter
+    this.lastHtmlSummary = null; // IMPROVED: Clear HTML summary
+    this.recentActions = []; // IMPROVED: Clear loop detection
     this.subAgents.clear();
     this.contextManager.reset();
     this.claudeClient.clearHistory();

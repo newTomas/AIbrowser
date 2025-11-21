@@ -11,6 +11,20 @@ export class HumanAssistanceManager {
   }
 
   /**
+   * Extract domain from URL for cooldown matching
+   * @param {string} url - Full URL
+   * @returns {string} Domain (e.g., 'example.com')
+   */
+  extractDomain(url) {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname;
+    } catch (error) {
+      return url; // Return original if parsing fails
+    }
+  }
+
+  /**
    * Request help for CAPTCHA challenge
    * @param {object} captchaInfo - Information about the CAPTCHA
    * @param {string} currentUrl - Current page URL
@@ -342,10 +356,11 @@ export class HumanAssistanceManager {
 
     console.log('\n📋 Options:');
     console.log('  1. Complete manually in browser');
-    console.log('  2. Skip this step');
-    console.log('  3. Abort the task');
+    console.log('  2. Provide text/data (if AI needs information)');
+    console.log('  3. Skip this step');
+    console.log('  4. Abort the task');
 
-    const action = await askForInput('\nChoose action (1-3)');
+    const action = await askForInput('\nChoose action (1-4)');
 
     const result = {
       type: 'generic',
@@ -364,12 +379,21 @@ export class HumanAssistanceManager {
         break;
 
       case '2':
+        console.log('\n📝 Please provide the requested information:');
+        const userData = await askForInput('Enter text/data');
+        result.userData = userData;
+        result.resolved = true;
+        result.method = 'user_provided_data';
+        console.log(`✓ Data received: ${userData.slice(0, 50)}${userData.length > 50 ? '...' : ''}`);
+        break;
+
+      case '3':
         console.log('\n⏭️  Skipping this step...');
         result.resolved = false;
         result.skipped = true;
         break;
 
-      case '3':
+      case '4':
         console.log('\n❌ Aborting task...');
         result.resolved = false;
         result.aborted = true;
@@ -417,16 +441,19 @@ export class HumanAssistanceManager {
     // Clean expired resolutions first
     this.clearExpiredResolutions();
 
+    const domain = this.extractDomain(url);
+
     const resolution = {
       type,
       url,
+      domain, // NEW: Store domain for matching
       timestamp: Date.now(),
       expiresAt: Date.now() + (cooldownMinutes * 60 * 1000),
     };
 
     this.resolvedIssues.push(resolution);
 
-    console.log(`✓ [HumanAssistance] ${type} marked as resolved for ${cooldownMinutes} minutes`);
+    console.log(`✓ [HumanAssistance] ${type} marked as resolved for ${cooldownMinutes} minutes (domain: ${domain})`);
   }
 
   /**
@@ -439,22 +466,30 @@ export class HumanAssistanceManager {
     this.clearExpiredResolutions();
 
     const now = Date.now();
+    const currentDomain = this.extractDomain(url);
 
     const resolved = this.resolvedIssues.some(issue => {
       // Check if same type
       if (issue.type !== type) return false;
 
-      // Check if same URL (exact match or starts with)
-      const sameUrl = issue.url === url || url.startsWith(issue.url);
-
       // Check if still within cooldown
       const withinCooldown = now < issue.expiresAt;
+      if (!withinCooldown) return false;
 
-      return sameUrl && withinCooldown;
+      // IMPROVED: Check by domain first (handles redirects after captcha solving)
+      // If domains match, consider it resolved
+      if (issue.domain && currentDomain === issue.domain) {
+        return true;
+      }
+
+      // Fallback: Check if same URL (exact match or starts with)
+      const sameUrl = issue.url === url || url.startsWith(issue.url);
+
+      return sameUrl;
     });
 
     if (resolved) {
-      console.log(`ℹ️  [HumanAssistance] ${type} detection skipped - recently resolved`);
+      console.log(`ℹ️  [HumanAssistance] ${type} detection skipped - recently resolved (domain: ${currentDomain})`);
     }
 
     return resolved;
@@ -467,15 +502,18 @@ export class HumanAssistanceManager {
    * @param {number} steps - Number of steps to skip (default: 5)
    */
   addToSkipList(type, url, steps = 5) {
+    const domain = this.extractDomain(url);
+
     const skipEntry = {
       type,
       url,
+      domain, // NEW: Store domain for matching
       stepsRemaining: steps,
     };
 
     this.skipList.push(skipEntry);
 
-    console.log(`ℹ️  [HumanAssistance] ${type} added to skip list for ${steps} steps`);
+    console.log(`ℹ️  [HumanAssistance] ${type} added to skip list for ${steps} steps (domain: ${domain})`);
   }
 
   /**
@@ -485,8 +523,18 @@ export class HumanAssistanceManager {
    * @returns {boolean} True if should skip detection
    */
   shouldSkip(type, url) {
+    const currentDomain = this.extractDomain(url);
+
     const index = this.skipList.findIndex(entry => {
-      return entry.type === type && (entry.url === url || url.startsWith(entry.url));
+      if (entry.type !== type) return false;
+
+      // IMPROVED: Check by domain first
+      if (entry.domain && currentDomain === entry.domain) {
+        return true;
+      }
+
+      // Fallback: Check by URL
+      return entry.url === url || url.startsWith(entry.url);
     });
 
     if (index === -1) {
