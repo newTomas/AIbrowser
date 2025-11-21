@@ -344,3 +344,22 @@ To extend functionality:
 - `--disable-web-security` flag is for development only - remove in production
 - Validate user input before passing to browser actions
 - Human assistance allows text input - sanitize if executing as code
+
+### Security Fixes (v2.2.0)
+
+**FIXED: 2FA Code Logging (HIGH)**
+- 2FA verification codes are no longer logged in plaintext
+- Success message shows "Verification code entered successfully" without exposing the actual code
+- Prevents credential harvesting from terminal history and logs
+
+**FIXED: Path Traversal (HIGH)**
+- Session names are now sanitized to prevent directory traversal attacks
+- Only alphanumeric characters, hyphens, and underscores allowed
+- Leading dots removed, length limited to 50 characters
+- Invalid characters are replaced with underscores
+- Prevents attacks like `../../.ssh` or `../etc/passwd`
+
+**Input Validation Rules:**
+- Session names: `[a-zA-Z0-9_-]` only, max 50 chars
+- No path separators (`/`, `\`), no dots at start
+- Empty names after sanitization are rejected with error message

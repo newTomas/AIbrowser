@@ -2,8 +2,18 @@
 
 Интеллектуальная автоматизация браузера с использованием Claude AI и Puppeteer. Система позволяет автономно выполнять задачи в браузере с поддержкой persistent sessions и умным управлением контекстом.
 
-## 🎉 Новые возможности v2.1
+## 🎉 Новые возможности v2.2
 
+### Интерактивный CLI UI
+- **Навигация стрелками** - как в Claude Code, без ввода цифр
+- **Inline текстовый ввод** - удобный ввод данных прямо в терминале
+- **Визуальное оформление** - подсказки и цветовые индикаторы для каждого пункта меню
+
+### Безопасность (Security Fixes)
+- **🔒 Path Traversal Protection** - защита от атак через имена сессий (HIGH severity fix)
+- **🔒 2FA Code Protection** - коды верификации больше не логируются в plaintext (HIGH severity fix)
+
+### v2.1 возможности
 - **Универсальная CAPTCHA детекция** - работает с любым провайдером, не только reCAPTCHA/hCaptcha
 - **DOM-клик** - избегает кликов по рекламе и overlay-элементам
 - **Умный ввод текста** - автоматическая очистка полей перед вводом
@@ -91,7 +101,7 @@ npm run dev
 
 #### 4. Автоматическая обработка CAPTCHA
 
-Когда ИИ встречает CAPTCHA:
+Когда ИИ встречает CAPTCHA (v2.2 интерактивный UI):
 ```
 ⚠️ CAPTCHA DETECTED - Human Assistance Required
 Current URL: https://example.com
@@ -101,13 +111,12 @@ Indicators:
   • Visible CAPTCHA element: iframe (300x400)
   • Active challenge confirmed
 
-Actions available:
-  1. Solve the CAPTCHA manually in the browser
-  2. Wait for automatic resolution (if supported)
-  3. Skip this step and continue
-  4. Abort the task
-
-Choose action (1-4):
+◆  Choose action
+│  ● Solve CAPTCHA manually
+│    ○ Wait for automatic resolution (if supported)
+│    ○ Skip this step
+│    ○ Abort task
+└  Use arrow keys to navigate, Enter to select
 ```
 
 **Универсальная детекция:**
@@ -115,28 +124,30 @@ Choose action (1-4):
 - Различает видимые вызовы от фоновых скриптов
 - Проверяет CSS: `display`, `visibility`, `opacity`
 
-#### 5. Текстовый ввод от пользователя (NEW)
+#### 5. Текстовый ввод от пользователя (v2.2 Interactive UI)
 
 Когда ИИ нужны данные:
 ```
 🆘 Human Assistance Required
 Reason: AI needs the verification code from email
 
-Options:
-  1. Complete manually in browser
-  2. Provide text/data (if AI needs information)  ← NEW
-  3. Skip this step
-  4. Abort the task
+◆  Choose action
+│  ○ Complete manually in browser
+│  ● Provide text/data (if AI needs information)
+│  ○ Skip this step
+│  ○ Abort the task
+└
 
-Choose action (1-4): 2
-Enter text/data: 123456
+◆  Enter text/data
+│  123456
+└
 
 ✓ Data received: 123456
 ```
 
 ИИ получит введённые данные и продолжит работу.
 
-## Архитектура v2.1
+## Архитектура v2.2
 
 ### Основные компоненты
 
@@ -154,9 +165,46 @@ src/
 ├── context/
 │   └── ContextManager.js      # Контекст с вкладками, evaluate action
 └── utils/
+    ├── interactivePrompts.js      # NEW v2.2: Интерактивный UI с @clack/prompts
     ├── DetectionUtils.js          # Универсальная CAPTCHA детекция
-    ├── HumanAssistanceManager.js  # С текстовым вводом
-    └── confirmAction.js           # Подтверждение деструктивных действий
+    └── HumanAssistanceManager.js  # С текстовым вводом + новый UI
+```
+
+### Ключевые улучшения v2.2
+
+#### Интерактивный CLI UI
+
+**Проблема:** Ввод номеров пунктов меню неудобен, хочется использовать стрелки как в Claude Code.
+
+**Решение:**
+```javascript
+// v2.1 - ввод номера
+console.log('1. Start task');
+console.log('2. Exit');
+const choice = await readline.question('Choose: '); // Нужно набрать '1' ❌
+
+// v2.2 - навигация стрелками
+import { selectFromMenu } from './utils/interactivePrompts.js';
+const choice = await selectFromMenu('Main Menu', [
+  { value: '1', label: 'Start task', hint: 'Begin automation' },
+  { value: '2', label: 'Exit', hint: 'Close app' }
+]); // Стрелки вверх/вниз, Enter для выбора ✅
+```
+
+#### Защита от Path Traversal
+
+**Проблема:** Пользователь может ввести `../../.ssh` в качестве имени сессии.
+
+**Решение:**
+```javascript
+// v2.1 - уязвимость
+this.currentSession = sessionName.trim(); // ❌ Path traversal!
+
+// v2.2 - санитизация
+const sanitized = sessionName.trim()
+  .replace(/^\.+/, '')               // Удалить leading dots
+  .replace(/[^a-zA-Z0-9_-]/g, '_')  // Только безопасные символы
+  .substring(0, 50);                 // Ограничить длину ✅
 ```
 
 ### Ключевые улучшения v2.1
@@ -243,7 +291,7 @@ if (loopDetected) {
 }
 ```
 
-### Поток выполнения v2.1
+### Поток выполнения v2.2
 
 ```
 1. MainAgent получает цель
@@ -482,7 +530,31 @@ MIT
 
 ## Changelog
 
-### v2.1.0 (Current)
+### v2.2.0 (Current)
+
+#### Security Fixes 🔒
+- 🛡️ **HIGH**: Fixed path traversal vulnerability via session names
+  - Session names now sanitized: only `a-zA-Z0-9_-` allowed
+  - Leading dots removed, length limited to 50 characters
+  - Prevents attacks like `../../.ssh` or `../etc/passwd`
+- 🛡️ **HIGH**: Fixed 2FA code logging exposure
+  - Verification codes no longer logged in plaintext
+  - Prevents credential harvesting from terminal history
+
+#### Added
+- ✨ Interactive CLI UI with @clack/prompts
+  - Arrow-key navigation (no number typing)
+  - Inline text input with placeholders
+  - Visual hints and color-coded messages
+  - Improved user experience throughout the app
+
+#### Changed
+- 🎨 Replaced readline with @clack/prompts for all user interactions
+- 📦 Updated package.json to v2.2.0
+- 📝 Added SECURITY_FIXES.md documentation
+- 🧪 Added security test suite (test-security-fixes.js)
+
+### v2.1.0
 
 #### Fixed
 - 🐛 Клики попадают в рекламу/overlay → DOM-клик вместо координатного

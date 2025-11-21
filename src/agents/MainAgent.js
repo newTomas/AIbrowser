@@ -3,7 +3,7 @@ import { HTMLAnalyzerAgent } from './HTMLAnalyzerAgent.js';
 import { VisionFallbackAgent } from './VisionFallbackAgent.js';
 import { HumanAssistanceManager } from '../utils/HumanAssistanceManager.js';
 import { detectHumanRequired, shouldRequestHumanHelp } from '../utils/DetectionUtils.js';
-import { confirmAction } from '../utils/confirmAction.js';
+import { confirmAction } from '../utils/interactivePrompts.js';
 
 /**
  * Main Agent orchestrates browser automation with autonomous decision-making
