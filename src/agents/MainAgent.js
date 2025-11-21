@@ -129,7 +129,7 @@ export class MainAgent {
             // IMPROVED: Use compact summary instead of full analysis
             const compactSummary = this.htmlAnalyzer.getCompactSummary(htmlAnalysis);
 
-            console.log(`✓ Extracted ${compactSummary.topButtons?.length || 0} actionable buttons with selectors`);
+            console.log(`✓ Extracted ${compactSummary.actionableElements?.length || 0} actionable elements (buttons, links, clickable blocks) with selectors`);
             console.log(`✓ Extracted ${compactSummary.forms?.length || 0} forms with input selectors`);
 
             // Store compact summary for context
@@ -365,11 +365,17 @@ export class MainAgent {
       prompt += `Purpose: ${summary.pagePurpose}\n`;
 
       // Add actionable elements with SELECTORS
-      if (summary.topButtons && summary.topButtons.length > 0) {
-        prompt += `\n### Actionable Buttons (with CSS selectors):\n`;
-        summary.topButtons.slice(0, 8).forEach((btn, i) => {
-          prompt += `${i + 1}. "${btn.text}" → selector: \`${btn.selector}\``;
-          if (btn.disabled) prompt += ` [DISABLED]`;
+      if (summary.actionableElements && summary.actionableElements.length > 0) {
+        prompt += `\n### Actionable Elements (buttons, links, clickable blocks):\n`;
+        summary.actionableElements.slice(0, 12).forEach((elem, i) => {
+          const type = elem.type === 'button' ? 'Button' :
+                      elem.type === 'link' ? 'Link' :
+                      elem.type === 'clickable-block' ? 'Clickable' : 'Element';
+
+          prompt += `${i + 1}. ${type}: "${elem.displayText}" → selector: \`${elem.cssSelector}\``;
+          if (elem.disabled) prompt += ` [DISABLED]`;
+          if (elem.clickableBy) prompt += ` [${elem.clickableBy}]`;
+          if (elem.href) prompt += ` → ${elem.href}`;
           prompt += '\n';
         });
       }

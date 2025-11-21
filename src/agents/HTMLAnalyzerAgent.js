@@ -152,10 +152,12 @@ export class HTMLAnalyzerAgent {
 
   /**
    * Extract links with context
+   * Now also includes elements with cursor: pointer (clickable blocks)
    */
   extractLinks($, baseUrl) {
     const links = [];
 
+    // Extract regular links
     $('a[href]').each((i, el) => {
       const $el = $(el);
       const href = $el.attr('href');
@@ -176,7 +178,72 @@ export class HTMLAnalyzerAgent {
         href,
         title: $el.attr('title') || '',
         ariaLabel: $el.attr('aria-label') || '',
+        type: 'link',
+        selector: this.generateBestSelector($el, el),
       });
+    });
+
+    // Extract clickable elements with cursor: pointer
+    const clickableSelectors = [
+      'div, span, li, td, th, p, h1, h2, h3, h4, h5, h6', // Block elements that can be clickable
+    ].join(',');
+
+    $(clickableSelectors).each((i, el) => {
+      const $el = $(el);
+      const text = $el.text().trim();
+      const computedStyle = $el.css('cursor');
+      const hasCursorPointer = computedStyle === 'pointer';
+
+      // Check for cursor: pointer via style attribute
+      const styleAttr = $el.attr('style') || '';
+      const hasStyleCursor = styleAttr.includes('cursor') &&
+        (styleAttr.includes('cursor: pointer') || styleAttr.includes('cursor:pointer'));
+
+      // Skip if no text content or not clickable
+      if (!text || text.length === 0) {
+        return;
+      }
+
+      // Skip if not clickable by cursor
+      if (!hasCursorPointer && !hasStyleCursor) {
+        return;
+      }
+
+      // Skip if this is actually a link or button (already captured)
+      if ($el.is('a, button, input[type="button"], input[type="submit"]')) {
+        return;
+      }
+
+      // Check if has onclick or similar event handlers
+      const onclick = $el.attr('onclick') || '';
+      const hasEventHandler = onclick.length > 0 ||
+        $el.attr('ng-click') ||
+        $el.attr('v-on:click') ||
+        $el.attr('@click') ||
+        $el.attr('data-click');
+
+      if (!hasCursorPointer && !hasStyleCursor && !hasEventHandler) {
+        return;
+      }
+
+      links.push({
+        text: text.slice(0, 100),
+        href: '', // No actual href for clickable blocks
+        title: $el.attr('title') || '',
+        ariaLabel: $el.attr('aria-label') || '',
+        type: 'clickable-block',
+        selector: this.generateBestSelector($el, el),
+        clickableBy: hasCursorPointer ? 'cursor-pointer' :
+                   hasStyleCursor ? 'style-cursor' :
+                   hasEventHandler ? 'event-handler' : 'unknown',
+      });
+    });
+
+    // Sort by relevance (links first, then clickable blocks)
+    links.sort((a, b) => {
+      if (a.type === 'link' && b.type !== 'link') return -1;
+      if (a.type !== 'link' && b.type === 'link') return 1;
+      return 0;
     });
 
     return links.slice(0, 50); // Limit to 50 links
@@ -420,6 +487,22 @@ export class HTMLAnalyzerAgent {
     // Extract only top priority elements with selectors
     const actionableElements = [];
 
+    // Add clickable links and blocks (max 8)
+    if (domData.links) {
+      domData.links.slice(0, 8).forEach(link => {
+        // Include only links with selectors (clickable elements)
+        if (link.selector) {
+          actionableElements.push({
+            type: link.type === 'clickable-block' ? 'clickable-block' : 'link',
+            cssSelector: link.selector,
+            displayText: link.text,
+            href: link.href,
+            clickableBy: link.clickableBy || null,
+          });
+        }
+      });
+    }
+
     // Add top buttons (max 10)
     if (domData.buttons) {
       domData.buttons.slice(0, 10).forEach(btn => {
@@ -459,7 +542,7 @@ export class HTMLAnalyzerAgent {
       pagePurpose: semanticAnalysis?.pagePurpose || domData.metadata.title,
 
       // Key actionable elements with selectors
-      topButtons: actionableElements.slice(0, 10),
+      actionableElements: actionableElements.slice(0, 15), // Changed from topButtons to be more general
       forms,
 
       // Semantic insights (compact)
