@@ -179,33 +179,39 @@ export class HTMLAnalyzerAgent {
         title: $el.attr('title') || '',
         ariaLabel: $el.attr('aria-label') || '',
         type: 'link',
-        selector: this.generateBestSelector($el, el),
+        selector: this.generateBestSelector($el, el, $),
       });
     });
 
     // Extract clickable elements with cursor: pointer
-    const clickableSelectors = [
-      'div, span, li, td, th, p, h1, h2, h3, h4, h5, h6', // Block elements that can be clickable
-    ].join(',');
+    // NEW v2.2.1: Also find clickable parents with text in children
+    const allElements = $('*').toArray();
 
-    $(clickableSelectors).each((i, el) => {
+    allElements.forEach((el, index) => {
+      // Skip too deep nesting to avoid infinite loops
+      if (index > 5000) return;
+
       const $el = $(el);
-      const text = $el.text().trim();
-      const computedStyle = $el.css('cursor');
-      const hasCursorPointer = computedStyle === 'pointer';
 
-      // Check for cursor: pointer via style attribute
+      // Check if element is clickable (has cursor/onclick/etc)
       const styleAttr = $el.attr('style') || '';
       const hasStyleCursor = styleAttr.includes('cursor') &&
         (styleAttr.includes('cursor: pointer') || styleAttr.includes('cursor:pointer'));
 
-      // Skip if no text content or not clickable
-      if (!text || text.length === 0) {
-        return;
-      }
+      const classes = $el.attr('class') || '';
+      const hasCursorClass = classes.includes('cursor-pointer') ||
+        classes.includes('clickable') ||
+        classes.includes('pointer');
 
-      // Skip if not clickable by cursor
-      if (!hasCursorPointer && !hasStyleCursor) {
+      const onclick = $el.attr('onclick') || '';
+      const hasEventHandler = onclick.length > 0 ||
+        $el.attr('ng-click') ||
+        $el.attr('v-on:click') ||
+        $el.attr('@click') ||
+        $el.attr('data-click');
+
+      // Skip if not clickable
+      if (!hasStyleCursor && !hasCursorClass && !hasEventHandler) {
         return;
       }
 
@@ -214,28 +220,42 @@ export class HTMLAnalyzerAgent {
         return;
       }
 
-      // Check if has onclick or similar event handlers
-      const onclick = $el.attr('onclick') || '';
-      const hasEventHandler = onclick.length > 0 ||
-        $el.attr('ng-click') ||
-        $el.attr('v-on:click') ||
-        $el.attr('@click') ||
-        $el.attr('data-click');
+      // Get text from element itself OR from first meaningful child
+      let $textSource = $el;
+      let text = $el.text().trim();
 
-      if (!hasCursorPointer && !hasStyleCursor && !hasEventHandler) {
+      // If element has no direct text, look for text in children
+      if (!text || text.length === 0) {
+        $el.children().each((i, child) => {
+          const childText = $(child).text().trim();
+          if (childText && childText.length > 0) {
+            text = childText;
+            $textSource = $(child);
+            return false; // Stop after finding first text
+          }
+        });
+      }
+
+      // Skip if no text content anywhere
+      if (!text || text.length === 0) {
         return;
       }
 
+      // Generate selector for the clickable PARENT (not the text child)
+      const selector = this.generateBestSelector($el, el, $);
+
+      // But use the text from wherever we found it
       links.push({
         text: text.slice(0, 100),
         href: '', // No actual href for clickable blocks
         title: $el.attr('title') || '',
         ariaLabel: $el.attr('aria-label') || '',
         type: 'clickable-block',
-        selector: this.generateBestSelector($el, el),
-        clickableBy: hasCursorPointer ? 'cursor-pointer' :
-                   hasStyleCursor ? 'style-cursor' :
+        selector: selector, // Selector for clickable parent
+        clickableBy: hasStyleCursor ? 'style-cursor' :
+                   hasCursorClass ? 'cursor-class' :
                    hasEventHandler ? 'event-handler' : 'unknown',
+        textSource: $textSource.is($el) ? 'self' : 'child', // Track where text came from
       });
     });
 
@@ -268,7 +288,7 @@ export class HTMLAnalyzerAgent {
       const ariaLabel = $el.attr('aria-label') || '';
 
       // Generate best selector for this button
-      const selector = this.generateBestSelector($el, el);
+      const selector = this.generateBestSelector($el, el, $);
 
       buttons.push({
         text: text.slice(0, 100),
@@ -408,7 +428,13 @@ export class HTMLAnalyzerAgent {
    * @param {Element} el - Raw element
    * @returns {string} Best CSS selector
    */
-  generateBestSelector($el, el) {
+  generateBestSelector($el, el, $ = null) {
+    // Check if Cheerio context is available
+    if (!$) {
+      console.error('[HTMLAnalyzerAgent] generateBestSelector: Cheerio context ($) not provided');
+      return el.name || 'element';
+    }
+
     // 1. Try ID (most reliable)
     const id = $el.attr('id');
     if (id && id.length > 0) {

@@ -434,7 +434,14 @@ export class MainAgent {
           return { success: navSuccess };
 
         case 'click':
-          return await this.browserManager.click(parameters.selector || parameters.text);
+          // NEW v2.2.1: Handle different selector formats
+          if (typeof parameters.selector === 'object' && parameters.selector !== null) {
+            // Object format: { selector: "div.option", text: "Программист" }
+            return await this.browserManager.click(parameters.selector);
+          } else {
+            // String format: "div.option" OR "Программист" (text fallback)
+            return await this.browserManager.click(parameters.selector || parameters.text);
+          }
 
         case 'type':
           return await this.browserManager.type(parameters.selector, parameters.text);

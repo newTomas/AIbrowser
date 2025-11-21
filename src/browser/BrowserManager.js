@@ -389,6 +389,26 @@ export class BrowserManager {
       // IMPROVED: Use DOM click instead of coordinate click to avoid clicking on overlays/ads
       // Element already found above (with text matching if needed)
 
+      // NEW v2.2.1: Enhanced logging for click actions
+      console.log(`🎯 Clicking element: ${cssSelector}${matchText ? ` with text: "${matchText}"` : ''}`);
+
+      // Get element details for debugging
+      const elementDetails = await element.evaluate(el => {
+        const rect = el.getBoundingClientRect();
+        return {
+          tagName: el.tagName.toLowerCase(),
+          id: el.id || '',
+          className: el.className || '',
+          text: (el.innerText || el.textContent || '').trim().slice(0, 50),
+          position: `(${Math.round(rect.left)}, ${Math.round(rect.top)})`,
+          size: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
+        };
+      });
+
+      console.log(`   Element: ${elementDetails.tagName}${elementDetails.id ? `#${elementDetails.id}` : ''}${elementDetails.className ? `.${elementDetails.className.split(' ')[0]}` : ''}`);
+      console.log(`   Text: "${elementDetails.text}"`);
+      console.log(`   Position: ${elementDetails.position}, Size: ${elementDetails.size}`);
+
       // Scroll element into view first
       await element.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }));
 
@@ -397,6 +417,7 @@ export class BrowserManager {
 
       // Click the DOM element directly (bypasses visual overlays)
       await element.click();
+      console.log(`✅ Click completed successfully`);
       return { success: true };
     } catch (error) {
       // Try clicking by text content
