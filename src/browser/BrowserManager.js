@@ -172,6 +172,9 @@ export class BrowserManager {
         const textParts = [];
 
         const walk = (node) => {
+          // Skip if node is null or invalid
+          if (!node) return;
+
           // Skip if node is not visible
           if (node.nodeType === Node.ELEMENT_NODE && !isVisible(node)) {
             return;
@@ -1104,6 +1107,9 @@ export class BrowserManager {
         const textParts = [];
 
         const walk = (node) => {
+          // Skip if node is null or invalid
+          if (!node) return;
+
           // Skip if node is not visible
           if (node.nodeType === Node.ELEMENT_NODE && !isVisible(node)) {
             return;

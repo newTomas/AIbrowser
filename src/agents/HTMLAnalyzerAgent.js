@@ -390,7 +390,7 @@ export class HTMLAnalyzerAgent {
         const selector = `${el.name}${classSelector}`;
 
         // Check if this selector is unique enough (not too many matches)
-        const matchCount = this.$(selector).length;
+        const matchCount = $(selector).length;
         if (matchCount === 1) {
           return selector; // Unique selector found!
         } else if (matchCount <= 10 && i === classList.length - 1) {
