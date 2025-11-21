@@ -365,24 +365,42 @@ export class HTMLAnalyzerAgent {
       return `${el.name}[aria-label="${ariaLabel}"]`;
     }
 
-    // 4. Try combination of class and text content
-    const classes = $el.attr('class');
-    const text = $el.text().trim();
+    // 4. Try role attribute (common for div buttons)
+    const role = $el.attr('role');
+    if (role) {
+      return `${el.name}[role="${role}"]`;
+    }
 
-    if (classes && text && text.length > 0 && text.length < 50) {
-      const firstClass = classes.split(' ')[0];
-      if (firstClass) {
-        return `${el.name}.${firstClass}:contains("${text.slice(0, 30)}")`;
+    // 5. Try combination with data attributes
+    const dataAttrs = Object.keys(el.attribs || {}).filter(attr => attr.startsWith('data-'));
+    if (dataAttrs.length > 0) {
+      const firstDataAttr = dataAttrs[0];
+      const value = $el.attr(firstDataAttr);
+      return `${el.name}[${firstDataAttr}="${value}"]`;
+    }
+
+    // 6. Try class with uniqueness check
+    const classes = $el.attr('class');
+    if (classes) {
+      const classList = classes.split(' ').filter(c => c.length > 0);
+
+      // Try to find unique class combination
+      for (let i = 0; i < Math.min(classList.length, 3); i++) {
+        const classSelector = classList.slice(0, i + 1).map(c => `.${c}`).join('');
+        const selector = `${el.name}${classSelector}`;
+
+        // Check if this selector is unique enough (not too many matches)
+        const matchCount = this.$(selector).length;
+        if (matchCount === 1) {
+          return selector; // Unique selector found!
+        } else if (matchCount <= 10 && i === classList.length - 1) {
+          // Multiple matches but manageable - return with note
+          return selector; // Will need text matching in click()
+        }
       }
     }
 
-    // 5. Fallback to class only
-    if (classes) {
-      const firstClass = classes.split(' ')[0];
-      return `${el.name}.${firstClass}`;
-    }
-
-    // 6. Last resort: element type
+    // 7. Last resort: element type
     return el.name;
   }
 

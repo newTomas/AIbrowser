@@ -277,9 +277,19 @@ export class BrowserManager {
 
   /**
    * Click element by selector or text
+   * @param {string|object} selector - CSS selector or object with {selector, text}
    */
   async click(selector) {
     if (!this.page) throw new Error('Browser not launched');
+
+    // NEW v2.2.1: Support object parameter with text for disambiguation
+    let cssSelector = selector;
+    let matchText = null;
+
+    if (typeof selector === 'object') {
+      cssSelector = selector.selector;
+      matchText = selector.text;
+    }
 
     // IMPROVED: Ensure current page is brought to front before interacting
     try {
@@ -289,30 +299,83 @@ export class BrowserManager {
     }
 
     try {
-      await this.page.waitForSelector(selector, { timeout: 5000 });
+      await this.page.waitForSelector(cssSelector, { timeout: 5000 });
+
+      // NEW v2.2.1: If text provided, find matching element among selector results
+      let element;
+      if (matchText) {
+        element = await this.page.evaluateHandle((sel, txt) => {
+          const elements = Array.from(document.querySelectorAll(sel));
+          // Find element with matching text
+          const match = elements.find(el => {
+            const text = (el.innerText || el.textContent || '').trim();
+            return text.includes(txt) || text === txt;
+          });
+          return match || elements[0]; // Fallback to first if no text match
+        }, cssSelector, matchText);
+
+        if (!element) {
+          return { success: false, error: `No element with text "${matchText}" found for selector: ${cssSelector}` };
+        }
+
+        console.log(`✓ Found element with text: "${matchText}"`);
+      } else {
+        element = await this.page.$(cssSelector);
+      }
+
+      if (!element) {
+        return { success: false, error: `Element not found: ${cssSelector}` };
+      }
 
       // NEW v2.2: Check if element is truly clickable
       if (this.visibilityChecker) {
-        const clickabilityInfo = await this.visibilityChecker.isElementClickable(selector);
+        const clickabilityInfo = await this.visibilityChecker.isElementClickable(cssSelector);
 
         if (!clickabilityInfo.clickable) {
           console.log(`⚠️  Element may not be clickable: ${clickabilityInfo.reason}`);
 
-          // If covered by modal, check for active modals
+          // If covered by modal, check if element is INSIDE modal or BEHIND it
           if (clickabilityInfo.isModal) {
             console.log(`   Covered by: ${clickabilityInfo.coveringElement}`);
             const modals = await this.visibilityChecker.detectModals();
             if (modals.length > 0) {
-              console.log(`   ❌ Active modals detected: ${modals.length}`);
-              console.log(`   🚨 Cannot click - element is blocked by modal overlay!`);
+              // NEW v2.2.1: Check if element is INSIDE the modal (interactive) or BEHIND it (blocked)
+              const isInsideModal = await this.page.evaluate((sel) => {
+                const element = document.querySelector(sel);
+                if (!element) return false;
 
-              // CRITICAL: Return error instead of attempting click
-              return {
-                success: false,
-                error: `Cannot click element - blocked by ${modals.length} active modal(s). Use dismiss_modal action first to close the modal, then try clicking again.`,
-                blockedByModal: true,
-                modalCount: modals.length,
-              };
+                // Check if element is descendant of any modal
+                const modalPatterns = [
+                  '[role="dialog"]', '[role="alertdialog"]', '.modal', '.popup',
+                  '.overlay', '[class*="modal"]', '[class*="dialog"]', '[id*="modal"]'
+                ];
+
+                for (const pattern of modalPatterns) {
+                  const modals = document.querySelectorAll(pattern);
+                  for (const modal of modals) {
+                    if (modal.contains(element)) {
+                      return true; // Element is INSIDE modal
+                    }
+                  }
+                }
+                return false; // Element is BEHIND modal
+              }, cssSelector);
+
+              if (isInsideModal) {
+                console.log(`   ✓ Element is INSIDE modal - allowing interaction`);
+                // Continue with click
+              } else {
+                console.log(`   ❌ Element is BEHIND modal - blocked!`);
+                console.log(`   🚨 Cannot click - element is blocked by modal overlay!`);
+
+                // CRITICAL: Return error instead of attempting click
+                return {
+                  success: false,
+                  error: `Cannot click element - blocked by ${modals.length} active modal(s). Element is behind the modal overlay. Use dismiss_modal action first to close the modal, then try clicking again.`,
+                  blockedByModal: true,
+                  modalCount: modals.length,
+                };
+              }
             }
           }
 
@@ -321,22 +384,17 @@ export class BrowserManager {
       }
 
       // IMPROVED: Use DOM click instead of coordinate click to avoid clicking on overlays/ads
-      // Get element handle and click directly on the DOM element
-      const element = await this.page.$(selector);
+      // Element already found above (with text matching if needed)
 
-      if (element) {
-        // Scroll element into view first
-        await element.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }));
+      // Scroll element into view first
+      await element.evaluate(el => el.scrollIntoView({ behavior: 'instant', block: 'center' }));
 
-        // Wait a bit for scroll and any animations
-        await new Promise(resolve => setTimeout(resolve, 300));
+      // Wait a bit for scroll and any animations
+      await new Promise(resolve => setTimeout(resolve, 300));
 
-        // Click the DOM element directly (bypasses visual overlays)
-        await element.click();
-        return { success: true };
-      } else {
-        return { success: false, error: `Element not found: ${selector}` };
-      }
+      // Click the DOM element directly (bypasses visual overlays)
+      await element.click();
+      return { success: true };
     } catch (error) {
       // Try clicking by text content
       try {
