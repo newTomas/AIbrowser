@@ -36,12 +36,14 @@ npm test
 
 1. **BrowserManager** (`src/browser/BrowserManager.js`)
    - Manages Puppeteer browser instances with multi-tab support
+   - **NEW v2.2**: Auto-syncs tabs with `browser.pages()` - handles session restore & manual closes
    - Handles persistent sessions (stores in `./sessions/{sessionName}`)
    - **Provides smart page content extraction** - extracts ONLY visible text, ignoring hidden elements
    - Uses `checkVisibility()` API to filter all content (text, links, forms, buttons)
    - Universal CAPTCHA visibility checking (works with any provider)
    - **Key methods**:
      - `launch()`, `goto()`, `getPageContent()`, `getHTML()`
+     - `syncTabs()` - **NEW v2.2**: Syncs internal tab tracking with real browser state
      - `getPageContent()` - **NEW v2.2**: Extracts only visible text using DOM tree walk + checkVisibility()
      - `getHTML()` - **NEW v2.2**: Removes hidden elements before returning HTML (for HTMLAnalyzerAgent/Cheerio)
      - `click()`, `type()` - **Always clear input before typing, use DOM click to avoid overlays**
@@ -60,6 +62,7 @@ npm test
    - Runs in **separate context** to avoid bloating main conversation
    - Uses Cheerio for offline DOM parsing
    - **NEW v2.2**: Receives pre-filtered HTML (only visible elements) from getHTML()
+   - **NEW v2.2**: Returns data with explicit field names: `cssSelector` (for use) and `displayText` (for reference)
    - Generates reliable CSS selectors (priority: ID > data-testid > name > aria-label)
    - Returns compact summaries with actionable elements + selectors
    - **Key methods**: `analyzePage()`, `getCompactSummary()`, `generateBestSelector()`
@@ -279,6 +282,22 @@ AI should follow these rules (defined in ContextManager):
 3. Do NOT navigate to URLs that are already open in other tabs - use `switch_tab` instead
 4. Example: If temp-mail.org is already open in tab-0, do `switch_tab` to tab-0 instead of `navigate`
 
+### Modal/Overlay Management Rules for AI (NEW v2.2.1)
+
+**CRITICAL**: Modals/overlays have PRIORITY over all other page interactions.
+
+AI must follow these rules (Rule #8 in ContextManager):
+1. **Check for overlays FIRST**: If context shows "⚠️ CRITICAL: Active Overlays Detected", STOP
+2. **Use dismiss_modal FIRST**: Before clicking ANY page elements, use `dismiss_modal` action
+3. **Wait after dismissal**: After successful dismiss, wait 1-2 seconds before continuing
+4. **Request help if needed**: If dismiss_modal fails, use `request_human_help`
+5. **DO NOT ignore**: Attempting to click while modal is active will result in error
+
+**Enforcement**: `BrowserManager.click()` will block clicks with error if modal detected:
+```
+Error: "Cannot click element - blocked by N active modal(s). Use dismiss_modal action first..."
+```
+
 ### Claude API Integration
 
 Expected response format from Claude:
@@ -328,6 +347,8 @@ Key settings:
 - **Navigation timeout on slow pages** - Fixed: Using domcontentloaded (15s timeout) instead of networkidle2 (30s)
 - **Wrong tab receives actions** - Fixed: Auto bringToFront() before click/type
 - **Execution context destroyed** - Fixed: Catch error, return placeholder data instead of crashing
+- **Tab list out of sync after session restore** - ✅ FIXED v2.2: `syncTabs()` called before each step, syncs with `browser.pages()`
+- **Closed tabs still in tab list** - ✅ FIXED v2.2: `syncTabs()` removes closed tabs and switches activeTab if needed
 
 ### CAPTCHA Detection Issues
 
@@ -349,6 +370,9 @@ Key settings:
 - **AI confused by placeholder content** - ✅ FIXED v2.2: Pre-loaded hidden elements (display:none) are ignored during text extraction
 - **HTMLAnalyzerAgent generates selectors for hidden elements** - ✅ FIXED v2.2: `getHTML()` removes hidden elements before Cheerio parsing
 - **AI tries to click hidden buttons/links** - ✅ FIXED v2.2: Both getPageContent() and getHTML() filter hidden elements
+- **AI uses button text as CSS selector** - ✅ FIXED v2.2: Fields renamed to `cssSelector` (for use) and `displayText` (for reference)
+- **AI confused between text and selector** - ✅ FIXED v2.2: Explicit examples of correct/incorrect selectors in instructions
+- **AI ignores modal overlays and tries to click elements behind them** - ✅ FIXED v2.2.1: Added Rule #8 about modal priority, enhanced context warnings, click() blocks attempts when modal detected
 
 ### Context and Token Issues
 

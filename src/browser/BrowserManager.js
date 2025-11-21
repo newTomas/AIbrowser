@@ -303,12 +303,20 @@ export class BrowserManager {
             console.log(`   Covered by: ${clickabilityInfo.coveringElement}`);
             const modals = await this.visibilityChecker.detectModals();
             if (modals.length > 0) {
-              console.log(`   Active modals detected: ${modals.length}`);
-              console.log(`   Consider dismissing modals before clicking`);
+              console.log(`   ❌ Active modals detected: ${modals.length}`);
+              console.log(`   🚨 Cannot click - element is blocked by modal overlay!`);
+
+              // CRITICAL: Return error instead of attempting click
+              return {
+                success: false,
+                error: `Cannot click element - blocked by ${modals.length} active modal(s). Use dismiss_modal action first to close the modal, then try clicking again.`,
+                blockedByModal: true,
+                modalCount: modals.length,
+              };
             }
           }
 
-          // Still attempt click with DOM method (may work despite warning)
+          // If not blocked by modal, still attempt click with DOM method (may work despite warning)
         }
       }
 
@@ -830,6 +838,104 @@ export class BrowserManager {
    */
   getActiveTabId() {
     return this.activeTabId;
+  }
+
+  /**
+   * Sync tabs with actual browser pages
+   * NEW v2.2: Syncs internal tab tracking with real browser state
+   * Handles cases where tabs were opened/closed outside of BrowserManager control
+   * (e.g., session restore, manual close by user)
+   * @returns {Promise<void>}
+   */
+  async syncTabs() {
+    if (!this.browser) return;
+
+    try {
+      // Get all actual pages from browser
+      const actualPages = await this.browser.pages();
+
+      // Create a map of actual pages for quick lookup
+      const actualPagesSet = new Set(actualPages);
+
+      // 1. Remove closed tabs from this.tabs
+      const tabsToRemove = [];
+      for (const [tabId, tab] of this.tabs.entries()) {
+        if (!actualPagesSet.has(tab.page)) {
+          tabsToRemove.push(tabId);
+        }
+      }
+
+      for (const tabId of tabsToRemove) {
+        console.log(`🗑️  Removing closed tab: ${tabId}`);
+        this.tabs.delete(tabId);
+
+        // If we removed the active tab, we need to switch to another
+        if (this.activeTabId === tabId) {
+          this.activeTabId = null;
+        }
+      }
+
+      // 2. Add new pages that are not tracked yet
+      const trackedPages = new Set(Array.from(this.tabs.values()).map(t => t.page));
+
+      for (const page of actualPages) {
+        if (!trackedPages.has(page)) {
+          // This is a new page (e.g., from session restore)
+          const newTabId = `tab-${this.tabs.size}`;
+
+          try {
+            const url = page.url();
+            const title = await page.title();
+
+            this.tabs.set(newTabId, {
+              id: newTabId,
+              page: page,
+              title: title,
+              url: url,
+            });
+
+            console.log(`✅ Added new tab from browser: ${newTabId} (${url})`);
+          } catch (error) {
+            console.log(`⚠️  Could not get info for new tab: ${error.message}`);
+          }
+        }
+      }
+
+      // 3. If no active tab, set one
+      if (!this.activeTabId && this.tabs.size > 0) {
+        const firstTabId = this.tabs.keys().next().value;
+        const firstTab = this.tabs.get(firstTabId);
+
+        this.activeTabId = firstTabId;
+        this.page = firstTab.page;
+        this.visibilityChecker = new VisibilityChecker(this.page);
+
+        console.log(`✅ Set active tab to: ${firstTabId}`);
+      }
+
+      // 4. Verify active tab still exists
+      if (this.activeTabId && !this.tabs.has(this.activeTabId)) {
+        // Active tab was removed, switch to first available
+        if (this.tabs.size > 0) {
+          const firstTabId = this.tabs.keys().next().value;
+          const firstTab = this.tabs.get(firstTabId);
+
+          this.activeTabId = firstTabId;
+          this.page = firstTab.page;
+          this.visibilityChecker = new VisibilityChecker(this.page);
+
+          console.log(`✅ Switched active tab to: ${firstTabId}`);
+        } else {
+          this.activeTabId = null;
+          this.page = null;
+          this.visibilityChecker = null;
+        }
+      }
+
+      console.log(`✅ Tab sync complete: ${this.tabs.size} tabs, active: ${this.activeTabId || 'none'}`);
+    } catch (error) {
+      console.error(`❌ Tab sync failed: ${error.message}`);
+    }
   }
 
   /**

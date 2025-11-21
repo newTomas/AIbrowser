@@ -407,8 +407,8 @@ export class HTMLAnalyzerAgent {
       domData.buttons.slice(0, 10).forEach(btn => {
         actionableElements.push({
           type: 'button',
-          text: btn.text,
-          selector: btn.selector,
+          cssSelector: btn.selector,  // USE THIS for click action
+          displayText: btn.text,       // For reference only (what user sees)
           disabled: btn.disabled,
         });
       });

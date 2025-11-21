@@ -43,6 +43,10 @@ export class MainAgent {
         this.stepCount++;
         console.log(`\n--- Step ${this.stepCount}/${this.maxSteps} ---`);
 
+        // NEW v2.2: Sync tabs with actual browser state before each step
+        // This handles cases where tabs were opened/closed outside of BrowserManager control
+        await this.browserManager.syncTabs();
+
         // Check if user aborted via human assistance
         if (this.humanAssistance.shouldAbort()) {
           console.log('\n❌ Task aborted by user');

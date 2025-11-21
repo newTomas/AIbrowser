@@ -161,19 +161,22 @@ export class ContextManager {
 
     // NEW v2.2: Add overlay/modal status
     if (this.overlayStatus && this.overlayStatus.hasActiveOverlays) {
-      context += '## ⚠️ Active Overlays Detected\n';
-      context += `${this.overlayStatus.modalCount} modal(s)/overlay(s) detected on page\n`;
+      context += '## ⚠️ ⚠️ ⚠️ CRITICAL: Active Overlays Detected ⚠️ ⚠️ ⚠️\n';
+      context += `BLOCKING ISSUE: ${this.overlayStatus.modalCount} modal(s)/overlay(s) are currently active on the page.\n`;
+      context += 'These overlays are BLOCKING access to page elements beneath them.\n\n';
+      context += '🚨 ACTION REQUIRED: You MUST use dismiss_modal action BEFORE attempting to click any page elements!\n\n';
 
       this.overlayStatus.modals.forEach((modal, i) => {
-        context += `\nOverlay ${i + 1}:\n`;
+        context += `Overlay ${i + 1}:\n`;
         context += `  Type: ${modal.type}\n`;
         context += `  Dismissible: ${modal.dismissible ? 'Yes (has close button)' : 'No'}\n`;
         context += `  Covers full screen: ${modal.coversFullScreen ? 'Yes' : 'No'}\n`;
-        context += `  Z-index: ${modal.zIndex}\n`;
+        context += `  Z-index: ${modal.zIndex}\n\n`;
       });
 
-      context += `\n${this.overlayStatus.recommendation}\n`;
-      context += 'You can use dismiss_modal action to close modals, or request human help.\n\n';
+      context += `${this.overlayStatus.recommendation}\n`;
+      context += '\n⚠️ NEXT STEP: Use dismiss_modal action with modalIndex parameter, or request_human_help if needed.\n';
+      context += 'DO NOT proceed with clicking page elements until modals are dismissed!\n\n';
     }
 
     // Add recent action history
@@ -208,8 +211,17 @@ Basic Navigation:
 - navigate: Navigate to URL
   Parameters: { url: "https://example.com" }
 
-- click: Click an element (use provided CSS selector from HTML analysis, or text content)
-  Parameters: { selector: "#button-id" } or { text: "Click me" }
+- click: Click an element using CSS selector or text content
+  Parameters:
+    Option 1 (PREFERRED): { selector: "#id" } or { selector: ".classname" } or { selector: "button.class" }
+    Option 2 (fallback): { selector: "Button Text" } - tries to find by text content
+
+  IMPORTANT: selector must be a CSS selector (starts with # or . or tag name), NOT plain text!
+  Examples of CORRECT selectors: "#submit-btn", ".login-button", "button.primary", "a.nav-link"
+  Examples of WRONG selectors: "Программист" (this is text, not a selector!), "Click me" (text!)
+
+  From HTML analysis, ALWAYS use the "cssSelector" field for clicking, NOT the "displayText" field!
+  The "displayText" is just for reference (what the user sees), "cssSelector" is what you use in the action.
 
 - type: Type text into input field
   Parameters: { selector: "#email", text: "user@example.com" }
@@ -285,6 +297,11 @@ IMPORTANT RULES:
    - To access content from another tab, use switch_tab FIRST, then perform actions
    - Do NOT navigate to URLs that are already open in other tabs - use switch_tab instead
    - Example: If temp-mail.org is already open in tab-0, do switch_tab to tab-0 instead of navigate
+8. **CRITICAL - Modal/Overlay Priority**:
+   - If you see "⚠️ Active Overlays Detected" section in context, you MUST use dismiss_modal FIRST
+   - DO NOT try to click elements on the page while modals/overlays are active - they are blocking access
+   - After dismissing modal, wait 1-2 seconds before continuing with page interactions
+   - If dismiss_modal fails, use request_human_help to ask user to close the modal manually
 
 Current context:
 ${this.getContext()}

@@ -20,6 +20,12 @@
 - **🔒 Path Traversal Protection** - защита от атак через имена сессий (HIGH severity fix)
 - **🔒 2FA Code Protection** - коды верификации больше не логируются в plaintext (HIGH severity fix)
 
+### Приоритет модальных окон (NEW v2.2.1!)
+- **🚨 Автоматическая блокировка кликов** - `click()` блокирует клики по элементам за модальным окном
+- **⚠️ Улучшенные предупреждения** - AI видит CRITICAL warning в контексте о активных overlay
+- **📋 Правило #8** - явное требование использовать `dismiss_modal` перед кликами
+- **🛡️ Двухслойная защита** - инструкции для AI + автоматическая блокировка в коде
+
 ### v2.1 возможности
 - **Универсальная CAPTCHA детекция** - работает с любым провайдером, не только reCAPTCHA/hCaptcha
 - **DOM-клик** - избегает кликов по рекламе и overlay-элементам
@@ -179,7 +185,28 @@ src/
 
 ### Ключевые улучшения v2.2
 
-#### Улучшенное определение видимости
+#### Синхронизация вкладок
+
+**Проблема:** После восстановления сессии или ручного закрытия вкладок, система не знает о реальном состоянии браузера.
+
+**Решение v2.2: Автоматическая синхронизация**
+- ✅ Синхронизация с `browser.pages()` перед каждым шагом
+- ✅ Обработка восстановления сессии (автоматическое обнаружение новых вкладок)
+- ✅ Обработка ручного закрытия вкладок
+- ✅ Автоматическое переключение activeTab если текущая была закрыта
+- ✅ Логирование всех изменений
+
+#### Улучшенное понимание CSS селекторов
+
+**Проблема:** AI путает текст кнопки ("Программист") с CSS селектором, пытается использовать текст как селектор.
+
+**Решение v2.2: Явные названия полей**
+- ✅ Переименовано: `text` → `displayText` (для reference)
+- ✅ Переименовано: `selector` → `cssSelector` (для use)
+- ✅ Явные примеры правильных/неправильных селекторов в инструкциях
+- ✅ Порядок полей: cssSelector первым, displayText вторым
+
+####  Улучшенное определение видимости
 
 **Проблема:** AI не понимает, что видимо на странице - пытается кликнуть за модалями, видит невидимые CAPTCHA, плохо определяет селекторы.
 
@@ -486,6 +513,11 @@ console.log('Stats:', agent.getStats());
 ### Execution context destroyed
 ✅ **Исправлено в v2.1** - обработка ошибки, возврат placeholder данных
 
+### ИИ пытается кликнуть элементы за модальным окном
+✅ **Исправлено в v2.2.1** - двухслойная защита:
+- Контекст показывает "⚠️ CRITICAL: Active Overlays Detected" с явным требованием использовать `dismiss_modal`
+- `click()` блокирует попытки клика с ошибкой: "Cannot click element - blocked by N active modal(s)"
+
 ## API Reference
 
 ### BrowserManager v2.1
@@ -579,7 +611,25 @@ MIT
 
 ## Changelog
 
-### v2.2.0 (Current)
+### v2.2.1 (Current)
+
+#### Modal/Overlay Priority Fix 🚨 (CRITICAL)
+- 🐛 **FIXED**: AI ignoring modal overlays and clicking elements behind them
+  - Added Rule #8: Modal/Overlay Priority in ContextManager instructions
+  - Enhanced context warnings: "⚠️ ⚠️ ⚠️ CRITICAL: Active Overlays Detected"
+  - click() now blocks attempts when modal detected, returns clear error
+  - Two-layer protection: AI instructions + code enforcement
+- 📝 **Documentation**:
+  - Added MODAL_PRIORITY_FIX.md with detailed explanation
+  - Updated CLAUDE.md with modal priority rules
+  - Updated README.md with v2.2.1 features
+
+#### Changed
+- 🔧 ContextManager: Enhanced overlay warnings with CRITICAL header and emojis
+- 🔧 BrowserManager.click(): Return error when element blocked by modal
+- 🔧 Added Rule #8 to AI instructions about modal priority
+
+### v2.2.0
 
 #### Visibility Detection 🔍 (MAJOR)
 - ✨ **NEW: VisibilityChecker** - проверка реальной кликабельности элементов
