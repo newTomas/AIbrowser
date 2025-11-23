@@ -44,9 +44,20 @@ export class WebAgent {
       logger.info('Initializing WebAgent...');
       await this.browserManager.initialize();
 
-      // Create initial tab
+      // Check if we already have tabs before creating a new one
+      const existingPageCount = await this.browserManager.getPageCount();
+      logger.debug(`Browser has ${existingPageCount} existing pages after initialization`);
+
+      // Create initial tab only if needed
       this.currentPageId = await this.browserManager.createTab();
-      logger.info(`Created initial tab with ID: ${this.currentPageId}`);
+      logger.info(`Using/created initial tab with ID: ${this.currentPageId}`);
+
+      // Log current tab state
+      const tabsInfo = await this.browserManager.getTabsInfo();
+      logger.info(`Total tabs after initialization: ${tabsInfo.length}`);
+      tabsInfo.forEach(tab => {
+        logger.debug(`  Tab ${tab.id}: ${tab.is_active ? 'ACTIVE' : 'inactive'} - ${tab.url}`);
+      });
 
       logger.info('WebAgent initialized successfully');
     } catch (error) {

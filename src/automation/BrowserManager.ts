@@ -91,8 +91,40 @@ export class BrowserManager {
       throw new Error('Browser not initialized. Call initialize() first.');
     }
 
+    // Check if there are already pages (Playwright might create a blank page automatically)
+    const existingPages = this.context.pages();
+    if (existingPages.length > 0) {
+      // Use existing pages instead of creating a new one
+      for (const page of existingPages) {
+        // Find first page that hasn't been registered yet
+        let isAlreadyRegistered = false;
+        for (const [registeredId, registeredPage] of this.pages) {
+          if (registeredPage === page) {
+            isAlreadyRegistered = true;
+            break;
+          }
+        }
+
+        if (!isAlreadyRegistered) {
+          logger.debug(`Using existing page instead of creating new one`);
+          return this.registerPage(page);
+        }
+      }
+    }
+
+    // Create a new page only if no existing pages are available
     const page = await this.context.newPage();
     return this.registerPage(page);
+  }
+
+  /**
+   * Get existing page count
+   */
+  async getPageCount(): Promise<number> {
+    if (!this.context) {
+      return 0;
+    }
+    return this.context.pages().length;
   }
 
   /**

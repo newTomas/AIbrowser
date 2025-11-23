@@ -116,8 +116,10 @@ export class PageActions {
         throw new Error(`Element ${elementId} not found`);
       }
 
-      // Extract text from the element using various methods
-      const copiedText = await page.evaluate((params: { id: any; elementRole: any }) => {
+      logger.debug(`Copy element ${elementId}: role="${elementDetails.role}", text="${elementDetails.text}"`);
+
+      // First, try to get text before clicking (for elements that already contain the text)
+      const preClickText = await page.evaluate((params: { id: any; elementRole: any }) => {
         const { id, elementRole } = params;
 
         // Search in main document first
@@ -210,7 +212,69 @@ export class PageActions {
         return text;
       }, { id: elementId, elementRole: elementDetails.role || '' });
 
-      const finalText = copiedText.trim();
+      let finalText = preClickText.trim();
+
+      // If it's a copy button or contains copy text, try to find the associated data to copy
+      if (!finalText && (elementDetails.role?.includes('copy') || elementDetails.text?.toLowerCase().includes('copy'))) {
+        // Look for associated data before clicking
+        logger.debug(`Looking for associated text for copy element ${elementId}`);
+        const associatedText = await page.evaluate((params: { id: any }) => {
+          const { id } = params;
+          const copyElement = document.querySelector(`[data-agent-id="${id}"]`) as any;
+
+          if (!copyElement) return '';
+
+          // Look for data attributes on the element itself
+          let text = copyElement.getAttribute('data-copy') ||
+                    copyElement.getAttribute('data-clipboard-text') ||
+                    copyElement.getAttribute('data-value') ||
+                    copyElement.getAttribute('value');
+
+          if (text) return text;
+
+          // Look for nearby input, textarea, or code elements
+          const parent = copyElement.parentElement;
+          if (parent) {
+            // Check siblings
+            const siblings = parent.children;
+            for (const sibling of siblings) {
+              if (sibling === copyElement) continue;
+
+              if (sibling.tagName === 'INPUT' || sibling.tagName === 'TEXTAREA') {
+                return (sibling as any).value || '';
+              }
+              if (sibling.tagName === 'CODE' || sibling.tagName === 'PRE') {
+                return sibling.textContent?.trim() || '';
+              }
+            }
+
+            // Check for input/code with specific attributes
+            const targetInput = parent.querySelector('input[type="text"], input[type="email"], textarea');
+            if (targetInput) {
+              return (targetInput as any).value || '';
+            }
+
+            const targetCode = parent.querySelector('code, pre');
+            if (targetCode) {
+              return targetCode.textContent?.trim() || '';
+            }
+          }
+
+          // Check data attributes on parent or grandparent
+          let current = copyElement.parentElement;
+          for (let i = 0; i < 3 && current; i++) {
+            text = current.getAttribute('data-copy') ||
+                  current.getAttribute('data-clipboard-text') ||
+                  current.getAttribute('data-value');
+            if (text) return text;
+            current = current.parentElement;
+          }
+
+          return '';
+        }, { id: elementId });
+
+        finalText = associatedText.trim();
+      }
 
       if (finalText) {
         logger.info(`Copied text from element ${elementId} on page ${pageId}: "${finalText}"`);
