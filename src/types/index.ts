@@ -60,7 +60,7 @@ export interface RiskAssessment {
 export interface SecurityContext {
   action: Action;
   current_url: string;
-  target_element?: TaggerElement;
+  target_element?: TaggerElement | null;
 }
 
 // Configuration Types

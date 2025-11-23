@@ -297,7 +297,7 @@ Be conservative - if unsure, classify as higher risk.`;
 
     if (targetElementId && get_element_fn) {
       try {
-        targetElement = await get_element_fn(targetElementId);
+        targetElement = await get_element_fn(targetElementId) || undefined;
       } catch (error) {
         logger.debug('Failed to get target element for security evaluation:', error);
       }
@@ -306,7 +306,7 @@ Be conservative - if unsure, classify as higher risk.`;
     return {
       action,
       current_url: currentUrl,
-      target_element: targetElement
+      target_element: targetElement || undefined
     };
   }
 

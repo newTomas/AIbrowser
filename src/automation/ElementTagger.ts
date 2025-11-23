@@ -15,59 +15,44 @@ export class ElementTagger {
         this.nextId = 1;
       }
 
+      // Execute in browser context
       const elements = await page.evaluate(() => {
-        // This function runs in the browser context
-        const elements: any[] = [];
+        const foundElements: any[] = [];
         let idCounter = 1;
 
-        // Find interactive elements using various selectors
-        const selectors = [
-          'button',
-          'input[type="button"]',
-          'input[type="submit"]',
-          'input[type="reset"]',
-          'a[href]',
-          'select',
-          'textarea',
-          '[onclick]',
-          '[onmousedown]',
-          '[onmouseup]',
-          '[tabindex]:not([tabindex="-1"])',
-          '[role="button"]',
-          '[role="link"]',
-          '[role="menuitem"]',
-          '[role="option"]',
-          '[role="tab"]',
-          'label',
-          'details',
-          'summary'
-        ];
+        // Find elements using selector that matches interactive elements
+        const interactiveElements = document.querySelectorAll(`
+          button,
+          input[type="button"],
+          input[type="submit"],
+          input[type="reset"],
+          a[href],
+          select,
+          textarea,
+          [onclick],
+          [onmousedown],
+          [onmouseup],
+          [tabindex]:not([tabindex="-1"]),
+          [role="button"],
+          [role="link"],
+          [role="menuitem"],
+          [role="option"],
+          [role="tab"],
+          label,
+          details,
+          summary
+        `);
 
-        const foundElements = new Set<Element>();
-
-        selectors.forEach(selector => {
+        // Process each element
+        interactiveElements.forEach((element: any) => {
           try {
-            const elementsFromSelector = document.querySelectorAll(selector);
-            elementsFromSelector.forEach(el => {
-              if (el && !foundElements.has(el)) {
-                foundElements.add(el);
-              }
-            });
-          } catch (error) {
-            console.warn(`Invalid selector: ${selector}`, error);
-          }
-        });
-
-        // Process each found element
-        foundElements.forEach(element => {
-          try {
-            // Skip if element is hidden or has display:none
-            const style = window.getComputedStyle(element);
+            // Skip if element is hidden
+            const style = (window as any).getComputedStyle(element);
             if (style.display === 'none' || style.visibility === 'hidden') {
               return;
             }
 
-            // Skip if element is outside viewport
+            // Skip if element has no size
             const rect = element.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) {
               return;
@@ -75,11 +60,10 @@ export class ElementTagger {
 
             // Get element information
             const tagName = element.tagName.toLowerCase();
-            const role = element.getAttribute('role') || this.getElementRole(tagName, element);
-            const text = this.getElementText(element);
-            const selector = this.generateSelector(element);
+            const role = element.getAttribute('role') || getElementRole(tagName, element);
+            const text = getElementText(element);
 
-            // Skip if no meaningful text or role
+            // Skip if no meaningful content
             if (!text.trim() && !role) {
               return;
             }
@@ -87,15 +71,14 @@ export class ElementTagger {
             // Check for existing agent ID
             const existingId = element.getAttribute('data-agent-id');
             if (!existingId) {
-              // Inject new ID
               element.setAttribute('data-agent-id', idCounter.toString());
             }
 
-            elements.push({
+            foundElements.push({
               id: existingId ? parseInt(existingId) : idCounter,
               role: role || tagName,
               text: text.trim(),
-              selector: selector,
+              selector: generateSelector(element),
               tab_index: element.tabIndex,
               onclick: element.getAttribute('onclick') || undefined
             });
@@ -108,13 +91,11 @@ export class ElementTagger {
           }
         });
 
-        return elements;
+        return foundElements;
 
-        // Helper functions for browser context
-        function getElementRole(tagName: string, element: Element): string {
-          if (tagName === 'input') {
-            return (element as HTMLInputElement).type || 'input';
-          }
+        // Helper functions
+        function getElementRole(tagName: string, element: any): string {
+          if (tagName === 'input') return element.type || 'input';
           if (tagName === 'a') return 'link';
           if (tagName === 'button') return 'button';
           if (tagName === 'select') return 'select';
@@ -125,55 +106,49 @@ export class ElementTagger {
           return tagName;
         }
 
-        function getElementText(element: Element): string {
-          // Try different methods to get meaningful text
-          if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+        function getElementText(element: any): string {
+          // Handle different element types
+          if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
             return element.value || element.placeholder || '';
           }
-          if (element instanceof HTMLSelectElement) {
+          if (element.tagName === 'SELECT') {
             const selectedOption = element.options[element.selectedIndex];
             return selectedOption ? selectedOption.text : '';
           }
-          if (element instanceof HTMLButtonElement) {
+          if (element.tagName === 'BUTTON') {
             return element.textContent?.trim() || element.value || element.title || '';
           }
-          if (element instanceof HTMLAnchorElement) {
+          if (element.tagName === 'A') {
             return element.textContent?.trim() || element.href || '';
           }
 
-          // For other elements, use textContent or aria-label
+          // For other elements
           return element.getAttribute('aria-label') ||
                  element.getAttribute('title') ||
                  element.textContent?.trim() ||
                  '';
         }
 
-        function generateSelector(element: Element): string {
-          // Generate a unique CSS selector for the element
-          if (element.id) {
-            return `#${element.id}`;
-          }
+        function generateSelector(element: any): string {
+          if (element.id) return `#${element.id}`;
+
           if (element.className) {
-            const classes = element.className.split(' ').filter(c => c.trim());
+            const classes = element.className.split(' ').filter((c: any) => c.trim());
             if (classes.length > 0) {
               return `${element.tagName.toLowerCase()}.${classes.join('.')}`;
             }
           }
 
-          // Generate selector based on data attributes
           const dataId = element.getAttribute('data-agent-id');
-          if (dataId) {
-            return `[data-agent-id="${dataId}"]`;
-          }
+          if (dataId) return `[data-agent-id="${dataId}"]`;
 
-          // Fallback to tag name
           return element.tagName.toLowerCase();
         }
       });
 
-      // Update the next ID counter based on found elements
+      // Update ID counter
       if (elements.length > 0) {
-        const maxId = Math.max(...elements.map(el => el.id));
+        const maxId = Math.max(...elements.map((el: any) => el.id));
         this.nextId = maxId + 1;
       }
 
@@ -188,7 +163,7 @@ export class ElementTagger {
   /**
    * Find element by agent ID
    */
-  async findElementById(page: Page, agentId: number): Promise<Element | null> {
+  async findElementById(page: Page, agentId: number): Promise<any> {
     try {
       return await page.evaluateHandle((id) => {
         return document.querySelector(`[data-agent-id="${id}"]`);
@@ -221,18 +196,17 @@ export class ElementTagger {
         const element = document.querySelector(`[data-agent-id="${id}"]`);
         if (!element) return false;
 
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
+        const rect = (element as any).getBoundingClientRect();
+        const style = (window as any).getComputedStyle(element);
 
-        // Check if element is visible and in viewport
         return rect.width > 0 &&
                rect.height > 0 &&
                style.display !== 'none' &&
                style.visibility !== 'hidden' &&
                rect.top >= 0 &&
                rect.left >= 0 &&
-               rect.bottom <= window.innerHeight &&
-               rect.right <= window.innerWidth;
+               rect.bottom <= (window as any).innerHeight &&
+               rect.right <= (window as any).innerWidth;
       }, agentId);
     } catch (error) {
       logger.error(`Failed to check interactability for element ${agentId}:`, error);
@@ -248,11 +222,10 @@ export class ElementTagger {
       await page.evaluate((id) => {
         const element = document.querySelector(`[data-agent-id="${id}"]`);
         if (element) {
-          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          (element as any).scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
       }, agentId);
 
-      // Wait for scroll to complete
       await page.waitForTimeout(500);
     } catch (error) {
       logger.error(`Failed to scroll element ${agentId} into view:`, error);
@@ -267,7 +240,7 @@ export class ElementTagger {
     try {
       await page.evaluate(() => {
         const elements = document.querySelectorAll('[data-agent-id]');
-        elements.forEach(element => {
+        elements.forEach((element: any) => {
           element.removeAttribute('data-agent-id');
         });
       });
@@ -279,7 +252,7 @@ export class ElementTagger {
   }
 
   /**
-   * Check if page was reloaded (by looking for existing tags)
+   * Check if page was reloaded
    */
   private async pageWasReloaded(page: Page): Promise<boolean> {
     try {

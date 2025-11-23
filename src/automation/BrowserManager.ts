@@ -101,20 +101,24 @@ export class BrowserManager {
     }
 
     // Return the first page (can be enhanced to track active page)
-    return this.pages.values().next().value;
+    const firstPage = this.pages.values().next().value;
+    if (!firstPage) {
+      throw new Error('No active page found');
+    }
+    return firstPage;
   }
 
   /**
    * Get all tabs information
    */
-  getTabsInfo(): TabInfo[] {
+  async getTabsInfo(): Promise<TabInfo[]> {
     const tabs: TabInfo[] = [];
     let activePage = this.getActivePage();
 
     for (const [pageId, page] of this.pages) {
       tabs.push({
         id: pageId,
-        title: page.title() || 'Untitled',
+        title: await page.title() || 'Untitled',
         url: page.url(),
         is_active: page === activePage
       });
@@ -188,7 +192,7 @@ export class BrowserManager {
     try {
       const scrollAmount = direction === 'down' ? amount : -amount;
       await page.evaluate((amount) => {
-        window.scrollBy(0, amount);
+        (window as any).scrollBy(0, amount);
       }, scrollAmount);
 
       await page.waitForTimeout(500); // Wait for scroll to settle

@@ -1,4 +1,16 @@
-import { LogLevelValue, getLogLevelNumeric } from '@/types';
+import { LogLevelValue } from '@/types';
+
+/**
+ * Get numeric log level for comparison
+ */
+function getLogLevelNumeric(logLevel: LogLevelValue): number {
+  switch (logLevel) {
+    case 'OFF': return 0;
+    case 'INFO': return 1;
+    case 'DEBUG': return 2;
+    default: return 1;
+  }
+}
 
 export class Logger {
   private currentLevel: LogLevelValue;
@@ -133,6 +145,13 @@ export class Logger {
       console.log(this.colorize('Details:', 'dim'), details);
     }
     console.log();
+  }
+
+  /**
+   * Warning logging
+   */
+  warning(message: string, ...args: any[]): void {
+    this.log('INFO', 'WARNING', 'yellow', message, ...args);
   }
 
   /**

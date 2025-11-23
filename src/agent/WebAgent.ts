@@ -109,7 +109,7 @@ export class WebAgent {
           timestamp: new Date(),
           page_info: await this.getCurrentPageInfo(),
           elements: [],
-          tabs: this.browserManager.getTabsInfo(),
+          tabs: await this.browserManager.getTabsInfo(),
           error: error instanceof Error ? error.message : 'Unknown error'
         };
 
@@ -269,7 +269,7 @@ export class WebAgent {
     try {
       const pageInfo = await this.getCurrentPageInfo();
       const elements = await this.pageActions.getInteractiveElements(this.currentPageId);
-      const tabs = this.browserManager.getTabsInfo();
+      const tabs = await this.browserManager.getTabsInfo();
 
       return {
         timestamp: new Date(),
@@ -290,7 +290,7 @@ export class WebAgent {
   private async buildContext(): Promise<string> {
     const pageInfo = await this.getCurrentPageInfo();
     const elements = await this.pageActions.getInteractiveElements(this.currentPageId!);
-    const tabs = this.browserManager.getTabsInfo();
+    const tabs = await this.browserManager.getTabsInfo();
     const historySummary = this.getHistorySummary();
 
     let context = `Current Page:\n- URL: ${pageInfo.url}\n- Title: ${pageInfo.title}\n\n`;
