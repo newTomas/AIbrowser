@@ -68,11 +68,30 @@ export class PageActions {
         throw new Error(`Element ${elementId} not found`);
       }
 
-      // Check if element supports text input
+      // Enhanced validation for text input compatibility
+      const unsupportedRoles = ['label', 'button', 'link', 'a', 'div', 'span', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
       const supportedRoles = ['input', 'textarea', 'search', 'email', 'password', 'tel', 'url'];
-      if (!supportedRoles.includes(elementDetails.role) && !elementDetails.role.includes('input')) {
-        throw new Error(`Element ${elementId} with role '${elementDetails.role}' does not support text input`);
+
+      // Check if element role is explicitly unsupported
+      if (unsupportedRoles.includes(elementDetails.role)) {
+        throw new Error(`Cannot type text into element ${elementId}: elements with role '${elementDetails.role}' do not support text input. Use click_element for buttons, copy_text for links, or find the associated input field.`);
       }
+
+      // Check if element role is supported
+      if (!supportedRoles.includes(elementDetails.role) &&
+          !elementDetails.role.includes('input') &&
+          !elementDetails.role.includes('text') &&
+          !elementDetails.role.includes('search')) {
+        throw new Error(`Element ${elementId} with role '${elementDetails.role}' does not support text input. Supported roles: ${supportedRoles.join(', ')}`);
+      }
+
+      // Additional check: If element text suggests it's not an input field
+      const text = elementDetails.text.toLowerCase();
+      if (text.includes('click') || text.includes('button') || text.includes('submit') || text.includes('copy')) {
+        throw new Error(`Element ${elementId} appears to be a button/clickable element based on text "${elementDetails.text}". Use click_element instead of type_text.`);
+      }
+
+      logger.debug(`Validated element ${elementId}: role="${elementDetails.role}", text="${elementDetails.text}" - OK for text input`);
 
       // Scroll element into view and ensure it's interactable
       await this.elementTagger.scrollElementIntoView(page, elementId);
@@ -303,6 +322,37 @@ export class PageActions {
       logger.info(`Navigated page ${pageId} to: ${url}`);
     } catch (error) {
       logger.error(`Failed to navigate page ${pageId} to ${url}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Wait for specific amount of time or for element to appear
+   */
+  async wait(pageId: number, durationOrSelector?: number | string): Promise<void> {
+    try {
+      const page = this.browserManager.getPage(pageId);
+      if (!page) {
+        throw new Error(`Page with ID ${pageId} not found`);
+      }
+
+      if (typeof durationOrSelector === 'number') {
+        // Wait for specified duration in milliseconds
+        const duration = durationOrSelector;
+        logger.info(`Waiting for ${duration}ms on page ${pageId}`);
+        await page.waitForTimeout(duration);
+      } else if (typeof durationOrSelector === 'string') {
+        // Wait for element to appear
+        const selector = durationOrSelector;
+        logger.info(`Waiting for element "${selector}" to appear on page ${pageId}`);
+        await page.waitForSelector(selector, { timeout: 30000 });
+      } else {
+        // Default wait of 2 seconds
+        logger.info(`Waiting for 2000ms on page ${pageId}`);
+        await page.waitForTimeout(2000);
+      }
+    } catch (error) {
+      logger.error(`Failed to wait on page ${pageId}:`, error);
       throw error;
     }
   }

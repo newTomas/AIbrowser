@@ -254,6 +254,10 @@ export class WebAgent {
           logger.info(`📋 Copy result: "${copiedText}"`);
           break;
 
+        case 'wait':
+          await this.pageActions.wait(this.currentPageId, action.parameters.duration || action.parameters.selector);
+          break;
+
         case 'request_user_assistance':
           await this.pageActions.requestUserAssistance(
             action.parameters.reason,
@@ -399,12 +403,24 @@ Available Actions:
 4. scroll_page(direction: 'up'|'down') - Scroll the page up or down
 5. switch_to_page(page_id: number) - Switch to a different browser tab (useful for multi-tab workflows)
 6. copy_text(id: number) - Copy text from an element safely (works with copy buttons, inputs, links)
-7. request_user_assistance(reason: string, is_critical: boolean) - Ask for human help
+7. wait(duration?: number, selector?: string) - Wait for time or element to appear
+8. request_user_assistance(reason: string, is_critical: boolean) - Ask for human help
 
 Multi-tab Strategy Examples:
 - Open search results in new tab: navigate_to → switch_to_page to new tab → analyze → switch_to_page back
 - Compare information: open multiple tabs → switch between them → copy_text from each → compare
 - Keep context: work in one tab while preserving another tab's state
+
+Wait Action Examples:
+- wait(3000): Wait 3 seconds for page to load
+- wait(".loading-spinner"): Wait for loading spinner to disappear
+- wait(5000): Wait 5 seconds for dynamic content to load
+- wait("[data-loaded=true]"): Wait for element with data-loaded attribute
+
+Important Notes:
+- Use type_text ONLY on input, textarea, select elements - NOT on labels, buttons, or text elements
+- Use copy_text for copy buttons, links, or elements containing text to copy
+- Use wait when pages load slowly or content appears dynamically
 
 Provide your action in this JSON format:
 {
