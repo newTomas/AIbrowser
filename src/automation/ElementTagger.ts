@@ -6,7 +6,7 @@ export class ElementTagger {
   private nextId: number = 1;
 
   /**
-   * Find and tag all interactive elements on the page
+   * Find and tag all interactive elements on the page (including iframes)
    */
   async tagInteractiveElements(page: Page): Promise<TaggerElement[]> {
     try {
@@ -15,85 +15,13 @@ export class ElementTagger {
         this.nextId = 1;
       }
 
-      // Execute in browser context
-      const elements = await page.evaluate(() => {
-        const foundElements: any[] = [];
-        let idCounter = 1;
+      // Start with current ID counter
+      const startId = this.nextId;
+      logger.debug(`Starting element tagging with ID ${startId}`);
 
-        // Find elements using selector that matches interactive elements
-        const interactiveElements = document.querySelectorAll(`
-          button,
-          input[type="button"],
-          input[type="submit"],
-          input[type="reset"],
-          a[href],
-          select,
-          textarea,
-          [onclick],
-          [onmousedown],
-          [onmouseup],
-          [tabindex]:not([tabindex="-1"]),
-          [role="button"],
-          [role="link"],
-          [role="menuitem"],
-          [role="option"],
-          [role="tab"],
-          label,
-          details,
-          summary
-        `);
-
-        // Process each element
-        interactiveElements.forEach((element: any) => {
-          try {
-            // Skip if element is hidden
-            const style = (window as any).getComputedStyle(element);
-            if (style.display === 'none' || style.visibility === 'hidden') {
-              return;
-            }
-
-            // Skip if element has no size
-            const rect = element.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) {
-              return;
-            }
-
-            // Get element information
-            const tagName = element.tagName.toLowerCase();
-            const role = element.getAttribute('role') || getElementRole(tagName, element);
-            const text = getElementText(element);
-
-            // Skip if no meaningful content
-            if (!text.trim() && !role) {
-              return;
-            }
-
-            // Check for existing agent ID
-            const existingId = element.getAttribute('data-agent-id');
-            if (!existingId) {
-              element.setAttribute('data-agent-id', idCounter.toString());
-            }
-
-            foundElements.push({
-              id: existingId ? parseInt(existingId) : idCounter,
-              role: role || tagName,
-              text: text.trim(),
-              selector: generateSelector(element),
-              tab_index: element.tabIndex,
-              onclick: element.getAttribute('onclick') || undefined
-            });
-
-            if (!existingId) {
-              idCounter++;
-            }
-          } catch (error) {
-            console.warn('Error processing element:', error);
-          }
-        });
-
-        return foundElements;
-
-        // Helper functions
+      // Execute comprehensive element tagging including iframe content
+      const result = await page.evaluate((startCounter) => {
+        // Helper functions for browser context
         function getElementRole(tagName: string, element: any): string {
           if (tagName === 'input') return element.type || 'input';
           if (tagName === 'a') return 'link';
@@ -107,7 +35,6 @@ export class ElementTagger {
         }
 
         function getElementText(element: any): string {
-          // Handle different element types
           if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
             return element.value || element.placeholder || '';
           }
@@ -121,8 +48,6 @@ export class ElementTagger {
           if (element.tagName === 'A') {
             return element.textContent?.trim() || element.href || '';
           }
-
-          // For other elements
           return element.getAttribute('aria-label') ||
                  element.getAttribute('title') ||
                  element.textContent?.trim() ||
@@ -131,29 +56,138 @@ export class ElementTagger {
 
         function generateSelector(element: any): string {
           if (element.id) return `#${element.id}`;
-
           if (element.className) {
             const classes = element.className.split(' ').filter((c: any) => c.trim());
             if (classes.length > 0) {
               return `${element.tagName.toLowerCase()}.${classes.join('.')}`;
             }
           }
-
           const dataId = element.getAttribute('data-agent-id');
           if (dataId) return `[data-agent-id="${dataId}"]`;
-
           return element.tagName.toLowerCase();
         }
-      });
 
-      // Update ID counter
-      if (elements.length > 0) {
-        const maxId = Math.max(...elements.map((el: any) => el.id));
-        this.nextId = maxId + 1;
-      }
+        function processElementsInDocument(doc: Document, startingId: number, iframePath: string = ''): { elements: any[], nextId: number } {
+          const foundElements: any[] = [];
+          let idCounter = startingId;
 
-      logger.debug(`Tagged ${elements.length} interactive elements`);
-      return elements as TaggerElement[];
+          // Find interactive elements
+          const interactiveElements = doc.querySelectorAll(`
+            button,
+            input[type="button"],
+            input[type="submit"],
+            input[type="reset"],
+            a[href],
+            select,
+            textarea,
+            [onclick],
+            [onmousedown],
+            [onmouseup],
+            [tabindex]:not([tabindex="-1"]),
+            [role="button"],
+            [role="link"],
+            [role="menuitem"],
+            [role="option"],
+            [role="tab"],
+            label,
+            details,
+            summary
+          `);
+
+          // Process each element
+          interactiveElements.forEach((element: any) => {
+            try {
+              // Skip iframes themselves (they're containers, not directly interactive)
+              if (element.tagName.toLowerCase() === 'iframe') {
+                return;
+              }
+
+              // Skip if element is hidden
+              const style = (window as any).getComputedStyle(element);
+              if (style.display === 'none' || style.visibility === 'hidden') {
+                return;
+              }
+
+              // Skip if element has no size
+              const rect = element.getBoundingClientRect();
+              if (rect.width === 0 || rect.height === 0) {
+                return;
+              }
+
+              // Get element information
+              const tagName = element.tagName.toLowerCase();
+              const role = element.getAttribute('role') || getElementRole(tagName, element);
+              const text = getElementText(element);
+
+              // Skip if no meaningful content
+              if (!text.trim() && !role) {
+                return;
+              }
+
+              // Check for existing agent ID
+              const existingId = element.getAttribute('data-agent-id');
+              if (!existingId) {
+                element.setAttribute('data-agent-id', idCounter.toString());
+              }
+
+              foundElements.push({
+                id: existingId ? parseInt(existingId) : idCounter,
+                role: role || tagName,
+                text: text.trim(),
+                selector: generateSelector(element),
+                tab_index: element.tabIndex,
+                onclick: element.getAttribute('onclick') || undefined,
+                iframe_path: iframePath
+              });
+
+              if (!existingId) {
+                idCounter++;
+              }
+            } catch (error) {
+              console.warn('Error processing element:', error);
+            }
+          });
+
+          // Process iframes in this document
+          const iframes = doc.querySelectorAll('iframe');
+          iframes.forEach((iframe: any, index: number) => {
+            try {
+              // Try to access iframe content (may fail due to cross-origin restrictions)
+              let iframeDoc = null;
+              try {
+                iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+              } catch (e) {
+                // Cross-origin iframe - skip content processing
+                console.log(`Skipping cross-origin iframe ${index + 1}`);
+                return;
+              }
+
+              if (iframeDoc) {
+                const currentPath = iframePath ? `${iframePath}>iframe${index + 1}` : `iframe${index + 1}`;
+                const iframeResult = processElementsInDocument(iframeDoc, idCounter, currentPath);
+                foundElements.push(...iframeResult.elements);
+                idCounter = iframeResult.nextId;
+              }
+            } catch (error) {
+              console.warn(`Error processing iframe ${index + 1}:`, error);
+            }
+          });
+
+          return { elements: foundElements, nextId: idCounter };
+        }
+
+        // Process the main document and all iframes
+        return processElementsInDocument(document, startCounter);
+
+      }, startId);
+
+      // Update the global ID counter with the next available ID
+      this.nextId = result.nextId;
+
+      const elements = result.elements as TaggerElement[];
+      logger.debug(`Tagged ${elements.length} interactive elements (including iframe content). Next ID will be ${this.nextId}`);
+
+      return elements;
     } catch (error) {
       logger.error('Failed to tag interactive elements:', error);
       throw error;
@@ -161,12 +195,33 @@ export class ElementTagger {
   }
 
   /**
-   * Find element by agent ID
+   * Find element by agent ID (including iframe elements)
    */
   async findElementById(page: Page, agentId: number): Promise<any> {
     try {
       return await page.evaluateHandle((id) => {
-        return document.querySelector(`[data-agent-id="${id}"]`);
+        // Search in main document first
+        let element = document.querySelector(`[data-agent-id="${id}"]`);
+
+        // If not found, search in all accessible iframes
+        if (!element) {
+          const iframes = document.querySelectorAll('iframe');
+          for (let i = 0; i < iframes.length; i++) {
+            const iframe = iframes[i];
+            try {
+              const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+              if (iframeDoc) {
+                element = iframeDoc.querySelector(`[data-agent-id="${id}"]`);
+                if (element) break;
+              }
+            } catch (e) {
+              // Cross-origin iframe - skip
+              continue;
+            }
+          }
+        }
+
+        return element;
       }, agentId);
     } catch (error) {
       logger.error(`Failed to find element with ID ${agentId}:`, error);
@@ -193,20 +248,59 @@ export class ElementTagger {
   async isElementInteractable(page: Page, agentId: number): Promise<boolean> {
     try {
       return await page.evaluate((id) => {
-        const element = document.querySelector(`[data-agent-id="${id}"]`);
-        if (!element) return false;
+        // Function to check visibility in a document
+        function checkVisibility(doc: Document): boolean {
+          const element = doc.querySelector(`[data-agent-id="${id}"]`);
+          if (!element) return false;
 
-        const rect = (element as any).getBoundingClientRect();
-        const style = (window as any).getComputedStyle(element);
+          const rect = (element as any).getBoundingClientRect();
+          const style = (window as any).getComputedStyle(element);
 
-        return rect.width > 0 &&
-               rect.height > 0 &&
-               style.display !== 'none' &&
-               style.visibility !== 'hidden' &&
-               rect.top >= 0 &&
-               rect.left >= 0 &&
-               rect.bottom <= (window as any).innerHeight &&
-               rect.right <= (window as any).innerWidth;
+          return rect.width > 0 &&
+                 rect.height > 0 &&
+                 style.display !== 'none' &&
+                 style.visibility !== 'hidden' &&
+                 rect.top >= 0 &&
+                 rect.left >= 0 &&
+                 rect.bottom <= (window as any).innerHeight &&
+                 rect.right <= (window as any).innerWidth;
+        }
+
+        // Check main document first
+        if (checkVisibility(document)) {
+          return true;
+        }
+
+        // Check all accessible iframes
+        const iframes = document.querySelectorAll('iframe');
+        for (let i = 0; i < iframes.length; i++) {
+          const iframe = iframes[i];
+          try {
+            const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+            if (iframeDoc) {
+              // Create a temporary checkVisibility function for iframe context
+              const result = (function() {
+                const element = iframeDoc!.querySelector(`[data-agent-id="${id}"]`);
+                if (!element) return false;
+
+                const rect = element.getBoundingClientRect();
+                const style = iframe.contentWindow!.getComputedStyle(element);
+
+                return rect.width > 0 &&
+                       rect.height > 0 &&
+                       style.display !== 'none' &&
+                       style.visibility !== 'hidden';
+              })();
+
+              if (result) return true;
+            }
+          } catch (e) {
+            // Cross-origin iframe - skip
+            continue;
+          }
+        }
+
+        return false;
       }, agentId);
     } catch (error) {
       logger.error(`Failed to check interactability for element ${agentId}:`, error);
@@ -215,7 +309,7 @@ export class ElementTagger {
   }
 
   /**
-   * Scroll element into view
+   * Scroll element into view (including iframe elements)
    */
   async scrollElementIntoView(page: Page, agentId: number): Promise<void> {
     try {
@@ -234,17 +328,34 @@ export class ElementTagger {
   }
 
   /**
-   * Remove all agent IDs from page
+   * Remove all agent IDs from page (including iframes)
    */
   async clearTags(page: Page): Promise<void> {
     try {
       await page.evaluate(() => {
+        // Clear tags from main document
         const elements = document.querySelectorAll('[data-agent-id]');
         elements.forEach((element: any) => {
           element.removeAttribute('data-agent-id');
         });
+
+        // Clear tags from all accessible iframes
+        const iframes = document.querySelectorAll('iframe');
+        iframes.forEach((iframe: any) => {
+          try {
+            const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+            if (iframeDoc) {
+              const iframeElements = iframeDoc.querySelectorAll('[data-agent-id]');
+              iframeElements.forEach((element: any) => {
+                element.removeAttribute('data-agent-id');
+              });
+            }
+          } catch (e) {
+            // Cross-origin iframe - skip
+          }
+        });
       });
-      logger.debug('Cleared all agent tags from page');
+      logger.debug('Cleared all agent tags from page and iframes');
     } catch (error) {
       logger.error('Failed to clear tags:', error);
       throw error;

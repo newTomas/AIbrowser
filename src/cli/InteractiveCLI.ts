@@ -53,7 +53,7 @@ export class InteractiveCLI {
   /**
    * Start interactive mode
    */
-  async startInteractiveMode(): Promise<void> {
+  public async startInteractiveMode(): Promise<void> {
     console.log(chalk.cyan('\n🤖 AI Web Agent - Interactive Mode'));
     console.log(chalk.gray('Type "help" for available commands or "exit" to quit\n'));
 

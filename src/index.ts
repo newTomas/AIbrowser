@@ -32,7 +32,17 @@ async function main(): Promise<void> {
   });
 
   try {
-    await cli.run(process.argv);
+    // Check if no arguments or only --help/--version are provided
+    const args = process.argv.slice(2);
+    const hasCommand = args.length > 0 && !args.every(arg => arg.startsWith('-'));
+
+    if (!hasCommand) {
+      // Default to interactive mode
+      await cli.startInteractiveMode();
+    } else {
+      // Run with provided arguments
+      await cli.run(process.argv);
+    }
   } catch (error) {
     logger.error('Fatal error:', error);
     process.exit(1);

@@ -29,6 +29,7 @@ export interface TaggerElement {
   selector?: string;
   tab_index?: number;
   onclick?: string;
+  iframe_path?: string;
 }
 
 export interface TabInfo {

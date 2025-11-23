@@ -101,6 +101,136 @@ export class PageActions {
   }
 
   /**
+   * Copy text from element (safe alternative to clipboard access)
+   */
+  async copyElementText(pageId: number, elementId: number): Promise<string> {
+    try {
+      const page = this.browserManager.getPage(pageId);
+      if (!page) {
+        throw new Error(`Page with ID ${pageId} not found`);
+      }
+
+      // Get element details first
+      const elementDetails = await this.elementTagger.getElementDetails(page, elementId);
+      if (!elementDetails) {
+        throw new Error(`Element ${elementId} not found`);
+      }
+
+      // Extract text from the element using various methods
+      const copiedText = await page.evaluate((params: { id: any; elementRole: any }) => {
+        const { id, elementRole } = params;
+
+        // Search in main document first
+        let element = document.querySelector(`[data-agent-id="${id}"]`) as any;
+
+        // If not found in main document, search in iframes
+        if (!element) {
+          const iframes = document.querySelectorAll('iframe');
+          for (let i = 0; i < iframes.length; i++) {
+            const iframe = iframes[i];
+            try {
+              const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+              if (iframeDoc) {
+                element = iframeDoc.querySelector(`[data-agent-id="${id}"]`) as any;
+                if (element) break;
+              }
+            } catch (e) {
+              // Cross-origin iframe - skip
+              continue;
+            }
+          }
+        }
+
+        if (!element) return '';
+
+        // Extract text based on element type and role
+        let text = '';
+
+        // Handle input elements
+        if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+          text = (element as HTMLInputElement | HTMLTextAreaElement).value || '';
+        }
+        // Handle select elements
+        else if (element.tagName === 'SELECT') {
+          const selectedOption = (element as HTMLSelectElement).options[(element as HTMLSelectElement).selectedIndex];
+          text = selectedOption ? selectedOption.text : '';
+        }
+        // Handle elements with copy functionality (like copy buttons)
+        else if (elementRole?.includes('copy') || element.textContent?.toLowerCase().includes('copy')) {
+          // Try to get data-copy attribute if exists
+          const copyText = element.getAttribute('data-copy') || element.getAttribute('data-clipboard-text');
+          if (copyText) {
+            text = copyText;
+          } else {
+            // Fallback to element text content
+            text = element.textContent?.trim() || '';
+          }
+        }
+        // Handle link elements
+        else if (element.tagName === 'A') {
+          text = (element as HTMLAnchorElement).href || element.textContent?.trim() || '';
+        }
+        // Handle elements with value attribute
+        else if (element.hasAttribute('value')) {
+          text = element.getAttribute('value') || '';
+        }
+        // Handle elements with specific data attributes
+        else if (element.hasAttribute('data-text')) {
+          text = element.getAttribute('data-text') || '';
+        }
+        // Fallback to text content
+        else {
+          text = element.textContent?.trim() || '';
+        }
+
+        // If we found a copy button, try to trigger the copy action and get the result
+        if (elementRole?.includes('copy') || element.onclick?.toString().includes('copy')) {
+          // Look for associated data that would be copied
+          const parent = element.closest('[data-copy], [data-clipboard-text]');
+          if (parent) {
+            const parentCopyText = parent.getAttribute('data-copy') || parent.getAttribute('data-clipboard-text');
+            if (parentCopyText) text = parentCopyText;
+          }
+
+          // Look for nearby input or code elements that might contain the copy target
+          const siblings = element.parentElement?.children;
+          if (siblings) {
+            for (const sibling of siblings) {
+              if ((sibling as any).tagName === 'INPUT' || (sibling as any).tagName === 'CODE') {
+                const siblingText = (sibling as any).value || (sibling as any).textContent?.trim();
+                if (siblingText && siblingText.length > 0) {
+                  text = siblingText;
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        return text;
+      }, { id: elementId, elementRole: elementDetails.role || '' });
+
+      const finalText = copiedText.trim();
+
+      if (finalText) {
+        logger.info(`Copied text from element ${elementId} on page ${pageId}: "${finalText}"`);
+
+        // Log additional context if available
+        if (elementDetails.iframe_path) {
+          logger.debug(`Element located in iframe path: ${elementDetails.iframe_path}`);
+        }
+      } else {
+        logger.warning(`No text found in element ${elementId} on page ${pageId}`);
+      }
+
+      return finalText;
+    } catch (error) {
+      logger.error(`Failed to copy text from element ${elementId} on page ${pageId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Navigate to URL
    */
   async navigateTo(pageId: number, url: string): Promise<void> {

@@ -7,6 +7,7 @@ export class BrowserManager {
   private context: BrowserContext | null = null;
   private pages: Map<number, Page> = new Map();
   private nextPageId: number = 1;
+  private activePageId: number | null = null;
   private config: BrowserConfig;
 
   constructor(config: BrowserConfig) {
@@ -60,8 +61,17 @@ export class BrowserManager {
     const pageId = this.nextPageId++;
     this.pages.set(pageId, page);
 
+    // Set as active if it's the first page
+    if (this.activePageId === null) {
+      this.activePageId = pageId;
+    }
+
     page.on('close', () => {
       this.pages.delete(pageId);
+      // If the closed page was active, set another page as active
+      if (this.activePageId === pageId) {
+        this.activePageId = this.pages.size > 0 ? this.pages.keys().next().value || null : null;
+      }
       logger.debug(`Page ${pageId} closed`);
     });
 
@@ -93,14 +103,21 @@ export class BrowserManager {
   }
 
   /**
-   * Get active page (first page or create new)
+   * Get active page
    */
   getActivePage(): Page {
     if (this.pages.size === 0) {
       throw new Error('No pages available. Create a tab first.');
     }
 
-    // Return the first page (can be enhanced to track active page)
+    if (this.activePageId !== null) {
+      const activePage = this.pages.get(this.activePageId);
+      if (activePage) {
+        return activePage;
+      }
+    }
+
+    // Fallback to first available page
     const firstPage = this.pages.values().next().value;
     if (!firstPage) {
       throw new Error('No active page found');
@@ -109,18 +126,25 @@ export class BrowserManager {
   }
 
   /**
+   * Get active page ID
+   */
+  getActivePageId(): number | null {
+    return this.activePageId;
+  }
+
+  /**
    * Get all tabs information
    */
   async getTabsInfo(): Promise<TabInfo[]> {
     const tabs: TabInfo[] = [];
-    let activePage = this.getActivePage();
+    const activePageId = this.activePageId;
 
     for (const [pageId, page] of this.pages) {
       tabs.push({
         id: pageId,
         title: await page.title() || 'Untitled',
         url: page.url(),
-        is_active: page === activePage
+        is_active: pageId === activePageId
       });
     }
 
@@ -138,7 +162,11 @@ export class BrowserManager {
 
     // Bring page to front
     await page.bringToFront();
-    logger.debug(`Switched to tab ${pageId}: ${page.url()}`);
+
+    // Update active page tracking
+    this.activePageId = pageId;
+
+    logger.info(`Switched to tab ${pageId}: ${page.url()}`);
   }
 
   /**

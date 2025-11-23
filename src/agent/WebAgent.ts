@@ -238,6 +238,11 @@ export class WebAgent {
           this.currentPageId = action.parameters.page_id;
           break;
 
+        case 'copy_text':
+          const copiedText = await this.pageActions.copyElementText(this.currentPageId, action.parameters.id);
+          logger.info(`📋 Copy result: "${copiedText}"`);
+          break;
+
         case 'request_user_assistance':
           await this.pageActions.requestUserAssistance(
             action.parameters.reason,
@@ -293,16 +298,19 @@ export class WebAgent {
     const tabs = await this.browserManager.getTabsInfo();
     const historySummary = this.getHistorySummary();
 
-    let context = `Current Page:\n- URL: ${pageInfo.url}\n- Title: ${pageInfo.title}\n\n`;
+    let context = `Current Active Page:\n- URL: ${pageInfo.url}\n- Title: ${pageInfo.title}\n\n`;
 
-    context += `Available Tabs (${tabs.length}):\n`;
+    context += `Available Browser Tabs (${tabs.length}):\n`;
     tabs.forEach(tab => {
-      context += `- Tab ${tab.id}: ${tab.title} (${tab.is_active ? 'ACTIVE' : 'inactive'}) - ${tab.url}\n`;
+      const status = tab.is_active ? '✓ ACTIVE' : '  inactive';
+      context += `- Tab ${tab.id}: ${status} - "${tab.title}"\n`;
+      context += `  URL: ${tab.url}\n`;
     });
 
-    context += `\nInteractive Elements (${elements.length}):\n`;
+    context += `\nInteractive Elements on Current Page (${elements.length}):\n`;
     elements.slice(0, 50).forEach(element => { // Limit to first 50 elements for context length
-      context += `- ID ${element.id}: [${element.role}] "${element.text}"\n`;
+      const iframeInfo = element.iframe_path ? ` [iframe: ${element.iframe_path}]` : '';
+      context += `- ID ${element.id}: [${element.role}] "${element.text}"${iframeInfo}\n`;
     });
 
     if (elements.length > 50) {
@@ -326,19 +334,37 @@ Current State:
 ${context}
 
 Based on the current state and your goal, think about what you should do next. Consider:
-1. What is the current situation?
-2. What have you tried so far?
-3. What is the best next step to achieve the goal?
-4. What are the potential risks or challenges?
+
+1. Current Situation Analysis:
+   - What page(s) are open and what's their content?
+   - What interactive elements are available?
+   - What information do I currently have?
+
+2. Multi-Tab Strategy:
+   - Would opening a new tab help preserve current context?
+   - Should I switch between tabs to compare information?
+   - Can I parallelize tasks across multiple tabs?
+   - Remember: I can create new tabs, switch between them, and copy text from any
+
+3. Strategic Planning:
+   - What's the most efficient sequence of actions?
+   - Should I use copy_text for information extraction?
+   - Are there iframes with additional content I should consider?
+   - What are the potential risks or challenges?
+
+4. Action Selection:
+   - Choose the most appropriate action from the available tools
+   - Consider if multi-tab workflow would be more effective
+   - Plan ahead for next steps after current action
 
 Provide your thought in this JSON format:
 {
-  "reasoning": "Detailed analysis of current situation and next steps",
+  "reasoning": "Detailed analysis of current situation and strategic next steps",
   "next_action": "Brief description of what you plan to do next",
   "confidence": 0.8
 }
 
-Focus on being strategic and considering the most effective path to achieve the goal.`;
+Focus on being strategic: use tabs effectively, leverage copy functionality, and consider iframe content when planning your approach.`;
   }
 
   /**
@@ -357,11 +383,17 @@ Based on your thought process and the current state, decide on the next action.
 
 Available Actions:
 1. click_element(id: number) - Click on an element by its ID
-2. type_text(id: number, text: string) - Type text into an input field
+2. type_text(id: number, text: string) - Type text into an input field (clears field first)
 3. navigate_to(url: string) - Navigate to a URL
-4. scroll_page(direction: 'up'|'down') - Scroll the page
-5. switch_to_page(page_id: number) - Switch to a different tab
-6. request_user_assistance(reason: string, is_critical: boolean) - Ask for human help
+4. scroll_page(direction: 'up'|'down') - Scroll the page up or down
+5. switch_to_page(page_id: number) - Switch to a different browser tab (useful for multi-tab workflows)
+6. copy_text(id: number) - Copy text from an element safely (works with copy buttons, inputs, links)
+7. request_user_assistance(reason: string, is_critical: boolean) - Ask for human help
+
+Multi-tab Strategy Examples:
+- Open search results in new tab: navigate_to → switch_to_page to new tab → analyze → switch_to_page back
+- Compare information: open multiple tabs → switch between them → copy_text from each → compare
+- Keep context: work in one tab while preserving another tab's state
 
 Provide your action in this JSON format:
 {
