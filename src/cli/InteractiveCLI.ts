@@ -181,8 +181,11 @@ export class InteractiveCLI {
 
     if (history.length > 0) {
       const lastEntry = history[history.length - 1];
-      console.log(`Last Action: ${lastEntry.action?.tool || chalk.gray('None')}`);
-      console.log(`Last Updated: ${lastEntry.timestamp.toLocaleString()}`);
+      // Extract action from the last assistant message
+      const lastAssistantMessage = history.filter(msg => msg.role === 'assistant').pop();
+      const actionMatch = lastAssistantMessage?.content?.match(/action:\s*"([^"]+)"/);
+      console.log(`Last Action: ${actionMatch?.[1] || chalk.gray('None')}`);
+      console.log(`Last Updated: ${lastEntry.timestamp?.toLocaleString() || chalk.gray('Unknown')}`);
     }
 
     console.log('');
@@ -202,18 +205,30 @@ export class InteractiveCLI {
     console.log(chalk.cyan(`\n📜 Agent History (${history.length} entries)`));
     console.log(chalk.gray('─'.repeat(50)));
 
-    history.slice(-10).forEach((entry, index) => {
-      const time = entry.timestamp.toLocaleTimeString();
-      const status = entry.observation?.error ? chalk.red('❌') : chalk.green('✅');
+    const assistantMessages = history.filter(msg => msg.role === 'assistant').slice(-10);
 
-      console.log(`${status} ${chalk.gray(time)} - ${entry.thought.reasoning.substring(0, 60)}...`);
+    assistantMessages.forEach((entry: any, index: number) => {
+      const time = entry.timestamp?.toLocaleTimeString() || 'Unknown time';
 
-      if (entry.action) {
-        console.log(`   ${chalk.gray('└─ Action:')} ${entry.action.tool} ${JSON.stringify(entry.action.parameters)}`);
+      // Extract thought and action from content
+      const thoughtMatch = entry.content?.match(/<thought>([\s\S]*?)<\/thought>/);
+      const actionMatch = entry.content?.match(/action:\s*"([^"]+)"/);
+      const goalMatch = entry.content?.match(/action:\s*"goal_achieved"/);
+
+      const status = goalMatch ? chalk.blue('🎉') : (actionMatch ? chalk.green('✅') : chalk.gray('💭'));
+
+      if (thoughtMatch) {
+        const thought = thoughtMatch[1].trim().substring(0, 80);
+        console.log(`${status} ${chalk.gray(time)} - ${thought}${thoughtMatch[1].length > 80 ? '...' : ''}`);
       }
 
-      if (entry.observation?.error) {
-        console.log(`   ${chalk.gray('└─ Error:')} ${chalk.red(entry.observation.error)}`);
+      if (actionMatch && !goalMatch) {
+        console.log(`   ${chalk.gray('└─ Action:')} ${actionMatch[1]}`);
+      }
+
+      if (goalMatch) {
+        const summaryMatch = entry.content?.match(/summary:\s*"([^"]+)"/);
+        console.log(`   ${chalk.gray('└─ Goal Achieved:')} ${chalk.green(summaryMatch?.[1] || 'Task completed')}`);
       }
     });
 
@@ -401,17 +416,52 @@ export class InteractiveCLI {
       console.log(chalk.gray('Context:'), request.context);
     }
 
-    const { response } = await inquirer.prompt([
+    const { action } = await inquirer.prompt([
       {
-        type: 'confirm',
-        name: 'response',
-        message: 'Do you want to allow this action?',
-        default: false
+        type: 'list',
+        name: 'action',
+        message: 'Choose your response:',
+        choices: [
+          { name: '✅ Allow this action', value: 'allow' },
+          { name: '❌ Deny this action', value: 'deny' },
+          { name: '🔄 Skip this step and continue', value: 'skip' },
+          { name: '⏸️ Pause execution and take manual control', value: 'pause' },
+          { name: '📝 Provide alternative instructions', value: 'instruct' }
+        ],
+        default: 'allow'
       }
     ]);
 
-    console.log(response ? chalk.green('✓ Action allowed') : chalk.red('✗ Action denied'));
-    return response;
+    switch (action) {
+      case 'allow':
+        console.log(chalk.green('✓ Action allowed'));
+        return true;
+      case 'deny':
+        console.log(chalk.red('✗ Action denied'));
+        return false;
+      case 'skip':
+        console.log(chalk.yellow('⏭️ Step skipped, continuing...'));
+        return true;
+      case 'pause':
+        console.log(chalk.cyan('⏸️ Execution paused. Press Enter to resume...'));
+        await inquirer.prompt([{ type: 'input', name: 'resume', message: '' }]);
+        console.log(chalk.green('▶️ Execution resumed'));
+        return true;
+      case 'instruct':
+        const { instruction } = await inquirer.prompt([
+          {
+            type: 'input',
+            name: 'instruction',
+            message: 'Enter your instructions:',
+            validate: (input) => input.trim().length > 0 || 'Please enter instructions'
+          }
+        ]);
+        console.log(chalk.blue('📝 Instructions received, allowing action...'));
+        // TODO: Pass instructions back to agent for consideration
+        return true;
+      default:
+        return false;
+    }
   }
 
   /**

@@ -9,6 +9,7 @@ export class BrowserManager {
   private nextPageId: number = 1;
   private activePageId: number | null = null;
   private config: BrowserConfig;
+  private lastActivatedPageId: number | null = null;
 
   constructor(config: BrowserConfig) {
     this.config = config;
@@ -29,7 +30,6 @@ export class BrowserManager {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          '--disable-web-security',
           '--disable-features=VizDisplayCompositor'
         ]
       });
@@ -55,66 +55,91 @@ export class BrowserManager {
   }
 
   /**
-   * Register a new page in the manager
+   * Register a new page in the manager with enhanced safety
    */
   private registerPage(page: Page): number {
-    const pageId = this.nextPageId++;
-    this.pages.set(pageId, page);
-
-    // Set as active if it's the first page
-    if (this.activePageId === null) {
-      this.activePageId = pageId;
+    // Check if this page is already registered (more efficient check)
+    for (const [existingId, existingPage] of this.pages) {
+      if (existingPage === page) {
+        logger.debug(`Page already registered with ID ${existingId}, returning existing ID`);
+        return existingId;
+      }
     }
 
-    page.on('close', () => {
+    // Generate unique ID atomically
+    const pageId = this.nextPageId++;
+
+    // Register the page first, then set up event listeners
+    this.pages.set(pageId, page);
+
+    try {
+      logger.debug(`Registering new page with ID ${pageId}: ${page.url()}`);
+
+      // Set up event listeners with error handling
+      const setupEventListeners = () => {
+        try {
+          page.on('close', () => {
+            this.pages.delete(pageId);
+            // If the closed page was active, set another page as active
+            if (this.activePageId === pageId) {
+              this.activePageId = this.pages.size > 0 ? this.pages.keys().next().value || null : null;
+            }
+            logger.debug(`Page ${pageId} closed`);
+          });
+
+          page.on('load', () => {
+            logger.debug(`Page ${pageId} loaded: ${page.url()}`);
+          });
+
+          // Add event listeners to track when this page becomes active
+          page.on('popup', () => {
+            this.lastActivatedPageId = pageId;
+            logger.debug(`Page ${pageId} triggered popup event`);
+          });
+        } catch (error) {
+          logger.warning(`Failed to set up event listeners for page ${pageId}:`, error);
+          // Continue anyway - the page is registered even if listeners fail
+        }
+      };
+
+      setupEventListeners();
+      return pageId;
+
+    } catch (error) {
+      // If registration fails, clean up
       this.pages.delete(pageId);
-      // If the closed page was active, set another page as active
-      if (this.activePageId === pageId) {
-        this.activePageId = this.pages.size > 0 ? this.pages.keys().next().value || null : null;
-      }
-      logger.debug(`Page ${pageId} closed`);
-    });
-
-    page.on('load', () => {
-      logger.debug(`Page ${pageId} loaded: ${page.url()}`);
-    });
-
-    logger.debug(`Registered new page ${pageId}: ${page.url()}`);
-    return pageId;
+      logger.error(`Failed to register page ${pageId}:`, error);
+      throw error;
+    }
   }
 
   /**
-   * Create a new tab/page
+   * Create a new tab/page with synchronization to prevent race conditions
    */
   async createTab(): Promise<number> {
     if (!this.context) {
       throw new Error('Browser not initialized. Call initialize() first.');
     }
 
-    // Check if there are already pages (Playwright might create a blank page automatically)
+    // Get all existing pages from context
     const existingPages = this.context.pages();
-    if (existingPages.length > 0) {
-      // Use existing pages instead of creating a new one
-      for (const page of existingPages) {
-        // Find first page that hasn't been registered yet
-        let isAlreadyRegistered = false;
-        for (const [registeredId, registeredPage] of this.pages) {
-          if (registeredPage === page) {
-            isAlreadyRegistered = true;
-            break;
-          }
-        }
 
-        if (!isAlreadyRegistered) {
-          logger.debug(`Using existing page instead of creating new one`);
-          return this.registerPage(page);
-        }
-      }
+    // Find pages that are not yet registered
+    const unregisteredPages = existingPages.filter(page => {
+      return !Array.from(this.pages.values()).includes(page);
+    });
+
+    if (unregisteredPages.length > 0) {
+      // Use the first unregistered page
+      const page = unregisteredPages[0];
+      logger.debug(`Using existing page instead of creating new one`);
+      return this.registerPage(page);
+    } else {
+      // Create a new page only if no existing pages are available
+      logger.debug('No unregistered pages found, creating new page');
+      const page = await this.context.newPage();
+      return this.registerPage(page);
     }
-
-    // Create a new page only if no existing pages are available
-    const page = await this.context.newPage();
-    return this.registerPage(page);
   }
 
   /**
@@ -135,25 +160,61 @@ export class BrowserManager {
   }
 
   /**
-   * Get active page
+   * Get active page (determine from actual browser state)
    */
-  getActivePage(): Page {
+  async getActivePage(): Promise<Page> {
     if (this.pages.size === 0) {
       throw new Error('No pages available. Create a tab first.');
     }
 
-    if (this.activePageId !== null) {
-      const activePage = this.pages.get(this.activePageId);
-      if (activePage) {
-        return activePage;
+    // First try to find focused page
+    for (const [pageId, page] of this.pages) {
+      try {
+        const isFocused = await page.evaluate(() => {
+          return document.hasFocus();
+        });
+
+        if (isFocused) {
+          this.activePageId = pageId;
+          return page;
+        }
+      } catch (error) {
+        // Page might be closed or inaccessible, skip
+        logger.debug(`Failed to check focus for page ${pageId}:`, error);
       }
     }
 
-    // Fallback to first available page
+    // If no page has focus, use the most recently used from context
+    if (this.context) {
+      try {
+        const contextPages = this.context.pages();
+        for (const contextPage of contextPages) {
+          for (const [pageId, mappedPage] of this.pages) {
+            if (mappedPage === contextPage) {
+              this.activePageId = pageId;
+              return mappedPage;
+            }
+          }
+        }
+      } catch (error) {
+        logger.debug(`Failed to determine active page from context:`, error);
+      }
+    }
+
+    // Final fallback - first available page
     const firstPage = this.pages.values().next().value;
     if (!firstPage) {
       throw new Error('No active page found');
     }
+
+    // Update internal tracking
+    for (const [pageId, page] of this.pages) {
+      if (page === firstPage) {
+        this.activePageId = pageId;
+        break;
+      }
+    }
+
     return firstPage;
   }
 
@@ -165,21 +226,81 @@ export class BrowserManager {
   }
 
   /**
-   * Get all tabs information
+   * Get all tabs information with smart active tab detection
    */
   async getTabsInfo(): Promise<TabInfo[]> {
     const tabs: TabInfo[] = [];
-    const activePageId = this.activePageId;
 
+    // Get all page info first
     for (const [pageId, page] of this.pages) {
-      tabs.push({
-        id: pageId,
-        title: await page.title() || 'Untitled',
-        url: page.url(),
-        is_active: pageId === activePageId
-      });
+      try {
+        tabs.push({
+          id: pageId,
+          title: await page.title() || 'Untitled',
+          url: page.url(),
+          is_active: false // Will be set below
+        });
+      } catch (error) {
+        logger.warning(`Failed to get info for page ${pageId}:`, error);
+      }
     }
 
+    // Determine active page using multiple strategies
+    let actualActivePageId: number | null = null;
+
+    // Strategy 1: Use last manually activated page (most reliable)
+    if (this.lastActivatedPageId && this.pages.has(this.lastActivatedPageId)) {
+      actualActivePageId = this.lastActivatedPageId;
+    }
+
+    // Strategy 2: Try to determine which page has focus via JavaScript
+    if (actualActivePageId === null) {
+      for (const [pageId, page] of this.pages) {
+        try {
+          const isFocused = await page.evaluate(() => document.hasFocus());
+          if (isFocused) {
+            actualActivePageId = pageId;
+            break;
+          }
+        } catch (error) {
+          // Page might be closed or inaccessible
+          logger.debug(`Failed to check focus for page ${pageId}:`, error);
+        }
+      }
+    }
+
+    // Strategy 3: Use page order from Playwright context (fallback)
+    if (actualActivePageId === null && this.context) {
+      try {
+        const contextPages = this.context.pages();
+        for (const contextPage of contextPages) {
+          for (const [pageId, mappedPage] of this.pages) {
+            if (mappedPage === contextPage) {
+              actualActivePageId = pageId;
+              break;
+            }
+          }
+          if (actualActivePageId !== null) break;
+        }
+      } catch (error) {
+        logger.debug(`Failed to determine active page from context:`, error);
+      }
+    }
+
+    // Strategy 4: Final fallback - use first page
+    if (actualActivePageId === null && this.pages.size > 0) {
+      actualActivePageId = this.pages.keys().next().value || null;
+    }
+
+    // Set the active flag
+    tabs.forEach(tab => {
+      tab.is_active = tab.id === actualActivePageId;
+    });
+
+    // Update internal tracking
+    this.activePageId = actualActivePageId;
+
+    logger.debug(`Found ${tabs.length} tabs, determined active: ${actualActivePageId} (lastActivated: ${this.lastActivatedPageId})`);
     return tabs;
   }
 
@@ -192,11 +313,11 @@ export class BrowserManager {
       throw new Error(`Page with ID ${pageId} not found`);
     }
 
-    // Bring page to front
+    // Bring page to front - this will make it the active page
     await page.bringToFront();
 
-    // Update active page tracking
-    this.activePageId = pageId;
+    // Track that this page was last activated
+    this.lastActivatedPageId = pageId;
 
     logger.info(`Switched to tab ${pageId}: ${page.url()}`);
   }
@@ -297,8 +418,14 @@ export class BrowserManager {
       });
 
       if (path) {
-        require('fs').writeFileSync(path, screenshot);
-        logger.debug(`Screenshot saved to ${path}`);
+        // Validate and sanitize file path to prevent path traversal
+        const sanitizedPath = this.sanitizeFilePath(path);
+        if (!sanitizedPath) {
+          throw new Error('Invalid file path for screenshot: path traversal detected');
+        }
+
+        require('fs').writeFileSync(sanitizedPath, screenshot);
+        logger.debug(`Screenshot saved to ${sanitizedPath}`);
       }
 
       return screenshot;
@@ -362,5 +489,48 @@ export class BrowserManager {
    */
   getTabCount(): number {
     return this.pages.size;
+  }
+
+  /**
+   * Sanitize file path to prevent path traversal attacks
+   */
+  private sanitizeFilePath(path: string): string | null {
+    try {
+      // Import path module
+      const pathModule = require('path');
+      const fs = require('fs');
+
+      // Resolve the absolute path
+      const absolutePath = pathModule.resolve(path);
+
+      // Define allowed directories (current working directory and subdirectories)
+      const allowedBase = process.cwd();
+
+      // Check if the resolved path is within allowed directories
+      if (!absolutePath.startsWith(allowedBase)) {
+        logger.warning(`Path traversal detected: ${path} -> ${absolutePath} (outside allowed ${allowedBase})`);
+        return null;
+      }
+
+      // Ensure the directory exists
+      const dir = pathModule.dirname(absolutePath);
+      if (!fs.existsSync(dir)) {
+        logger.warning(`Directory does not exist: ${dir}`);
+        return null;
+      }
+
+      // Check file extension to ensure it's a valid image format
+      const validExtensions = ['.png', '.jpg', '.jpeg', '.bmp', '.gif'];
+      const ext = pathModule.extname(absolutePath).toLowerCase();
+      if (ext && !validExtensions.includes(ext)) {
+        logger.warning(`Invalid file extension for screenshot: ${ext}`);
+        return null;
+      }
+
+      return absolutePath;
+    } catch (error) {
+      logger.error('Error sanitizing file path:', error);
+      return null;
+    }
   }
 }

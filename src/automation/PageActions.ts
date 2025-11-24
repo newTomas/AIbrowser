@@ -3,6 +3,8 @@ import { TaggerElement } from '@/types';
 import { BrowserManager } from './BrowserManager';
 import { ElementTagger } from './ElementTagger';
 import { logger } from '@/cli/Logger';
+import { safeString, safeIncludes, safeProperty, filterNulls, isNonEmptyString } from '@/utils/nullSafety';
+import { getConfig } from '@/utils/config';
 
 export class PageActions {
   private browserManager: BrowserManager;
@@ -11,6 +13,121 @@ export class PageActions {
   constructor(browserManager: BrowserManager, elementTagger: ElementTagger) {
     this.browserManager = browserManager;
     this.elementTagger = elementTagger;
+  }
+
+  /**
+   * Filter sensitive data from extracted text based on filter level
+   */
+  private filterSensitiveData(text: string | null | undefined): string {
+    const safeText = safeString(text);
+    if (!isNonEmptyString(safeText)) {
+      return safeText;
+    }
+
+    const config = getConfig();
+    const filterLevel = config.sensitiveFilterLevel;
+
+    // OFF: No filtering
+    if (filterLevel === 'OFF') {
+      return safeText;
+    }
+
+    let filteredText = safeText;
+
+    // Patterns and their handling based on filter level
+    const patternHandlers = [
+      // Credit card numbers
+      {
+        pattern: /\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/g,
+        handler: (match: string) => {
+          const digits = match.replace(/\D/g, '');
+          if (filterLevel === 'PARTIAL') {
+            return `****-****-****-${digits.slice(-4)}`;
+          }
+          return '[CREDIT_CARD]';
+        }
+      },
+      {
+        pattern: /\b\d{16}\b/g,
+        handler: (match: string) => {
+          if (filterLevel === 'PARTIAL') {
+            return `****-****-****-${match.slice(-4)}`;
+          }
+          return '[CREDIT_CARD]';
+        }
+      },
+
+      // Social Security Numbers
+      {
+        pattern: /\b\d{3}-\d{2}-\d{4}\b/g,
+        handler: (match: string) => {
+          if (filterLevel === 'PARTIAL') {
+            return `***-**-${match.slice(-4)}`;
+          }
+          return '[SSN]';
+        }
+      },
+
+      // API keys and tokens
+      {
+        pattern: /sk-[a-zA-Z0-9_-]{10,}/g,
+        handler: () => '[API_KEY]'
+      },
+      {
+        pattern: /[a-zA-Z0-9]{32,}/g,
+        handler: (match: string) => {
+          // Only filter very long hex-like strings that are likely keys
+          if (/^[a-fA-F0-9]+$/.test(match) && match.length >= 32) {
+            return '[LONG_KEY]';
+          }
+          return match;
+        }
+      },
+
+      // Email addresses
+      {
+        pattern: /\b([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/g,
+        handler: (match: string, ...groups: string[]) => {
+          if (filterLevel === 'PARTIAL') {
+            const [username, domain] = match.split('@');
+            const visibleChars = Math.min(3, username.length);
+            const maskedUsername = username.substring(0, visibleChars) + '*'.repeat(username.length - visibleChars);
+            return `${maskedUsername}@${domain}`;
+          }
+          return '[EMAIL]';
+        }
+      },
+
+      // Phone numbers
+      {
+        pattern: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g,
+        handler: () => '[PHONE]'
+      },
+      {
+        pattern: /\+?1[-.]?\d{3}[-.]?\d{3}[-.]?\d{4}\b/g,
+        handler: () => '[PHONE]'
+      },
+
+      // Passwords and sensitive fields
+      {
+        pattern: /password["\s]*[:=]["\s]*([^"'\s,}]+)/gi,
+        handler: () => 'password: [REDACTED]'
+      },
+      {
+        pattern: /(secret|token|key|auth)["\s]*[:=]["\s]*([^"'\s,}]+)/gi,
+        handler: (match: string, ...groups: string[]) => {
+          const fieldName = groups[0];
+          return `${fieldName}: [REDACTED]`;
+        }
+      }
+    ];
+
+    // Apply filtering patterns
+    patternHandlers.forEach(({ pattern, handler }) => {
+      filteredText = filteredText.replace(pattern, handler);
+    });
+
+    return filteredText;
   }
 
   /**
@@ -69,26 +186,17 @@ export class PageActions {
       }
 
       // Enhanced validation for text input compatibility
-      const unsupportedRoles = ['label', 'button', 'link', 'a', 'div', 'span', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
-      const supportedRoles = ['input', 'textarea', 'search', 'email', 'password', 'tel', 'url'];
+      const supportedRoles = ['input', 'textarea'];
 
-      // Check if element role is explicitly unsupported
-      if (unsupportedRoles.includes(elementDetails.role)) {
-        throw new Error(`Cannot type text into element ${elementId}: elements with role '${elementDetails.role}' do not support text input. Use click_element for buttons, copy_text for links, or find the associated input field.`);
+      // Primary validation: Check if element role is supported
+      if (!supportedRoles.includes(elementDetails.role)) {
+        throw new Error(`Cannot type text into element ${elementId}: elements with role '${elementDetails.role}' do not support text input. Supported roles: ${supportedRoles.join(', ')}. Use click_element for buttons or find the associated input field.`);
       }
 
-      // Check if element role is supported
-      if (!supportedRoles.includes(elementDetails.role) &&
-          !elementDetails.role.includes('input') &&
-          !elementDetails.role.includes('text') &&
-          !elementDetails.role.includes('search')) {
-        throw new Error(`Element ${elementId} with role '${elementDetails.role}' does not support text input. Supported roles: ${supportedRoles.join(', ')}`);
-      }
-
-      // Additional check: If element text suggests it's not an input field
-      const text = elementDetails.text.toLowerCase();
-      if (text.includes('click') || text.includes('button') || text.includes('submit') || text.includes('copy')) {
-        throw new Error(`Element ${elementId} appears to be a button/clickable element based on text "${elementDetails.text}". Use click_element instead of type_text.`);
+      // Additional check: If input_type suggests it's not a text input field
+      const unsupportedInputTypes = ['button', 'submit', 'reset', 'image', 'file', 'checkbox', 'radio'];
+      if (elementDetails.input_type && unsupportedInputTypes.includes(elementDetails.input_type)) {
+        throw new Error(`Element ${elementId} has input_type "${elementDetails.input_type}" which doesn't support text input. Use click_element instead of type_text.`);
       }
 
       logger.debug(`Validated element ${elementId}: role="${elementDetails.role}", text="${elementDetails.text}" - OK for text input`);
@@ -112,7 +220,13 @@ export class PageActions {
       // Wait a bit for any validation or state change
       await page.waitForTimeout(500);
 
-      logger.info(`Typed text into element ${elementId} on page ${pageId}: "${text}"`);
+      // Get actual value from the field after typing
+      const actualValue = await page.evaluate((id) => {
+        const element = document.querySelector(`[data-agent-id="${id}"]`);
+        return element ? (element as HTMLInputElement).value : '';
+      }, elementId);
+
+      logger.info(`Typed text into element ${elementId} on page ${pageId}: "${actualValue}"`);
     } catch (error) {
       logger.error(`Failed to type text into element ${elementId} on page ${pageId}:`, error);
       throw error;
@@ -138,7 +252,7 @@ export class PageActions {
       logger.debug(`Copy element ${elementId}: role="${elementDetails.role}", text="${elementDetails.text}"`);
 
       // First, try to get text before clicking (for elements that already contain the text)
-      const preClickText = await page.evaluate((params: { id: any; elementRole: any }) => {
+      const preClickText = await page.evaluate((params: { id: number; elementRole: string }) => {
         const { id, elementRole } = params;
 
         // Search in main document first
@@ -177,19 +291,20 @@ export class PageActions {
           text = selectedOption ? selectedOption.text : '';
         }
         // Handle elements with copy functionality (like copy buttons)
-        else if (elementRole?.includes('copy') || element.textContent?.toLowerCase().includes('copy')) {
+        else if (elementRole.includes('copy') || (element.textContent && element.textContent.toLowerCase().includes('copy'))) {
           // Try to get data-copy attribute if exists
           const copyText = element.getAttribute('data-copy') || element.getAttribute('data-clipboard-text');
           if (copyText) {
             text = copyText;
           } else {
             // Fallback to element text content
-            text = element.textContent?.trim() || '';
+            text = (element.textContent || '').trim();
           }
         }
         // Handle link elements
         else if (element.tagName === 'A') {
-          text = (element as HTMLAnchorElement).href || element.textContent?.trim() || '';
+          const href = (element as HTMLAnchorElement).href || '';
+          text = href || (element.textContent || '').trim();
         }
         // Handle elements with value attribute
         else if (element.hasAttribute('value')) {
@@ -201,11 +316,11 @@ export class PageActions {
         }
         // Fallback to text content
         else {
-          text = element.textContent?.trim() || '';
+          text = (element.textContent || '').trim();
         }
 
         // If we found a copy button, try to trigger the copy action and get the result
-        if (elementRole?.includes('copy') || element.onclick?.toString().includes('copy')) {
+        if (elementRole.includes('copy') || (element.onclick && element.onclick.toString().includes('copy'))) {
           // Look for associated data that would be copied
           const parent = element.closest('[data-copy], [data-clipboard-text]');
           if (parent) {
@@ -237,9 +352,9 @@ export class PageActions {
       if (!finalText && (elementDetails.role?.includes('copy') || elementDetails.text?.toLowerCase().includes('copy'))) {
         // Look for associated data before clicking
         logger.debug(`Looking for associated text for copy element ${elementId}`);
-        const associatedText = await page.evaluate((params: { id: any }) => {
+        const associatedText = await page.evaluate((params: { id: number }) => {
           const { id } = params;
-          const copyElement = document.querySelector(`[data-agent-id="${id}"]`) as any;
+          const copyElement = document.querySelector(`[data-agent-id="${id}"]`) as HTMLElement | null;
 
           if (!copyElement) return '';
 
@@ -255,12 +370,12 @@ export class PageActions {
           const parent = copyElement.parentElement;
           if (parent) {
             // Check siblings
-            const siblings = parent.children;
+            const siblings = Array.from(parent.children);
             for (const sibling of siblings) {
               if (sibling === copyElement) continue;
 
               if (sibling.tagName === 'INPUT' || sibling.tagName === 'TEXTAREA') {
-                return (sibling as any).value || '';
+                return (sibling as HTMLInputElement | HTMLTextAreaElement).value || '';
               }
               if (sibling.tagName === 'CODE' || sibling.tagName === 'PRE') {
                 return sibling.textContent?.trim() || '';
@@ -295,18 +410,26 @@ export class PageActions {
         finalText = associatedText.trim();
       }
 
-      if (finalText) {
-        logger.info(`Copied text from element ${elementId} on page ${pageId}: "${finalText}"`);
+      // Apply sensitive data filtering to the extracted text
+    const filteredText = this.filterSensitiveData(finalText);
 
-        // Log additional context if available
-        if (elementDetails.iframe_path) {
-          logger.debug(`Element located in iframe path: ${elementDetails.iframe_path}`);
-        }
-      } else {
-        logger.warning(`No text found in element ${elementId} on page ${pageId}`);
+    if (filteredText) {
+      logger.info(`Copied text from element ${elementId} on page ${pageId}: "${filteredText}"`);
+
+      // Log if any data was filtered
+      if (filteredText !== finalText) {
+        logger.security(`Sensitive data was filtered during copy operation from element ${elementId}`, 'MEDIUM');
       }
 
-      return finalText;
+      // Log additional context if available
+      if (elementDetails.text && elementDetails.text.includes('iframe')) {
+        logger.debug(`Element text suggests iframe content: ${elementDetails.text}`);
+      }
+    } else {
+      logger.warning(`No text found in element ${elementId} on page ${pageId}`);
+    }
+
+    return filteredText;
     } catch (error) {
       logger.error(`Failed to copy text from element ${elementId} on page ${pageId}:`, error);
       throw error;
@@ -316,12 +439,23 @@ export class PageActions {
   /**
    * Navigate to URL
    */
-  async navigateTo(pageId: number, url: string): Promise<void> {
+  async navigateTo(pageId: number, url: string, newTab: boolean = false): Promise<number | void> {
     try {
-      await this.browserManager.navigate(pageId, url);
-      logger.info(`Navigated page ${pageId} to: ${url}`);
+      if (newTab) {
+        // Create new tab and navigate there
+        const newPageId = await this.browserManager.createTab();
+        await this.browserManager.navigate(newPageId, url);
+        // Switch to new tab to make it active
+        await this.browserManager.switchToTab(newPageId);
+        logger.info(`Created new tab ${newPageId} and navigated to: ${url}`);
+        return newPageId;
+      } else {
+        // Navigate in existing tab
+        await this.browserManager.navigate(pageId, url);
+        logger.info(`Navigated page ${pageId} to: ${url}`);
+      }
     } catch (error) {
-      logger.error(`Failed to navigate page ${pageId} to ${url}:`, error);
+      logger.error(`Failed to navigate to ${url}:`, error);
       throw error;
     }
   }

@@ -72,8 +72,9 @@ export class RiskEvaluator {
 - ID: ${target_element.id}
 - Role: ${target_element.role}
 - Text: "${target_element.text}"
-- Selector: ${target_element.selector || 'N/A'}
-- Has onclick: ${!!target_element.onclick}`
+- Value: "${target_element.value}"
+- Type: ${target_element.input_type || 'N/A'}
+- Group: ${target_element.input_group || 'N/A'}`
       : 'No specific target element';
 
     return `You are a security evaluator for a web automation agent. Assess the risk level of the following action.
